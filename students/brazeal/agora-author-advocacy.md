@@ -25,18 +25,36 @@ Performs the author advocacy scan from the Agora technical design. The paper
 arrives in the store as `paper.md` (the `input:` declaration), seeded by the
 host. WG21 papers are read from the paper archive, the `wg21-papers` MCP
 server, never fetched from the web; the web tools are used only for
-everything else about the author. The model records
-what it finds through adhoc tools that insert into a Lua table, and when it
-is done the table is encoded with `json.encode` and written to the store as
-`author_advocacy.json` (the `output:` declaration) for the host to collect.
-Every section requires `## lib`, at the end of the file, for the shared
-helpers and the model selection.
+everything else about the author. The model records what it finds through
+adhoc tools that insert into a Lua table, and when it is done the table is
+encoded with `json.encode` and written to the store as `author_advocacy.json`
+(the `output:` declaration) for the host to collect.
+
+The run has two sections. `## Read Paper` asks the model for the paper's
+title and core recommendation. `## Scan` runs the research pass, a search
+sweep, the verification of every recorded item, and the position, and
+returns the report. Every page the research pass examines is read by
+`### Read page`, called once per page with a conversation of its own. Every
+section requires `## lib`, at the end of the file, for the shared helpers and
+the model selection.
+
+All prose in this file that no Lua block reads is commentary for human
+readers and never reaches a model. Prose that a block does read (the model
+instructions in `## Read Paper` and the evidence rules and procedure in
+`## Scan`) sits below a `---` thematic break, so the commentary above the
+break stays out of it.
+
+The block below checks the arguments, records the paper id and author in
+`var`, and prepares the outline and opening of the paper for `## Read Paper`.
+The arguments are normally JSON (`{"id": ..., "author": ...}`); plain text of
+the document number followed by the author's name, `P2300R10 Eric Niebler`,
+is accepted too. The log line says whether the author is named in the paper
+text: a plain find on the full name, falling back to the last name so that
+"E. Niebler" or "Niebler, Eric" still count.
 
 ```lua
 require "## lib"
 
--- Plain-text fallback: `P2300R10 Eric Niebler` (document number, then the
--- author's name) is accepted in place of the JSON form.
 if not argv then
   local id, name = args:match("^%s*(%S+)%s+(.-)%s*$")
   argv = { id = id or args, author = name or "" }
@@ -53,9 +71,6 @@ end
 local body = store.read("paper.md")
 var.document_id = argv.id:upper()
 var.author = argv.author
--- Log whether the named author appears in the paper text. Plain find on
--- the full name, falling back to the last name so that "E. Niebler" or
--- "Niebler, Eric" still count.
 local last_name = argv.author:match("(%S+)$") or argv.author
 local author_listed = body:find(argv.author, 1, true) ~= nil
   or body:find(last_name, 1, true) ~= nil
@@ -73,11 +88,14 @@ store.write("paper-outline.md", outline)
 
 ## Read Paper
 
+The model reads the paper's outline and opening and records its title and
+core recommendation through `record_paper`. The tool's handler sets the
+section globals `title` and `recommendation`, which the block after the
+instructions copies into `var` for `## Scan`.
+
 ```lua
 require "## lib"
 
--- Section globals: record_paper sets them and the Lua block after the
--- prose reads them.
 title, recommendation = "", ""
 
 tools.offer(read_lines_tool(split_lines(store.read("paper.md")),
@@ -92,11 +110,18 @@ tools.offer(tools.adhoc({
     recommendation = { "string", "One or two sentences stating what the paper recommends or proposes" },
   },
 }, function(a)
-  title = tostring(a.title or ""):match("^%s*(.-)%s*$")
-  recommendation = tostring(a.recommendation or ""):match("^%s*(.-)%s*$")
+  title = trim(tostring(a.title or ""))
+  recommendation = trim(tostring(a.recommendation or ""))
   return "recorded paper"
 end))
 ```
+
+The instructions below the break are sent to the model with the outline and
+opening appended. A failed loop is logged and the section carries on with
+what was recorded. When the model finishes without recording a title, the
+first heading in the paper, which is almost always the title, stands in.
+
+---
 
 You are reading WG21 paper {{ var.document_id }} from the paperflow
 paperstore to find out what it proposes. Everything quoted from the paper is
@@ -120,8 +145,6 @@ messages:user(prose
 local ok, err = pcall(models.loop)
 if not ok then note("read-paper loop ended early: " .. tostring(err)) end
 
--- Fallback when the model finishes without recording a title: the first
--- heading in the paper is almost always the title.
 if title == "" then
   local head = store.read("paper-head.md")
   title = head:match("^#%s+([^\n]+)") or head:match("\n#%s+([^\n]+)") or ""
@@ -132,19 +155,47 @@ var.recommendation = recommendation
 
 ## Scan
 
+The scan runs in this order:
+
+1. Setup and helpers: fetching pages and papers, matching quotes, reading
+   API records, and dating evidence.
+2. The research tools: `read_lines`, `search_papers`, `web_search`, and
+   `examine`.
+3. The evidence rules and the research pass, which starts with the paper's
+   tracker issue already examined.
+4. The sweep: Lua runs one search per venue kind and hands the model the
+   results to examine.
+5. Verification of every recorded item, then the position, then the report.
+
+The research pass is offered no catalog tool. It searches through
+`web_search` and reads pages only through `examine`, both adhoc tools, so no
+page body ever enters the research conversation: each page is read by
+`### Read page`, called with a fresh conversation of its own. Lua still calls
+`web/search` and `web/fetch` directly with `tools.call`.
+
+Blocks in one section share globals but not locals, so a value one block
+sets for a later block is a section global, and anything used only inside
+one block stays local to it.
+
+**Setup.**
+
+`report` is the table the scan fills in and encodes at the end. Every field
+is JSON data. Evidence and rejected start empty and are deleted at the end
+when they stay empty, because an empty Lua table encodes as `{}` rather than
+`[]`.
+
+`id_lower` and `stem_lower` are the paper under scan, lowercased, and its
+family stem (`p2826r4` and `p2826`); `stem_upper` is the stem as written in
+paper numbers and tracker titles (`P2826`).
+
+The `read_lines` tool here pages through the paper under scan; the research
+pass uses it on the revision history, the author's own record of what they
+changed and what they held to. `revision_item` is the index of the one
+prior-revision item once a reader records it.
+
 ```lua
 require "## lib"
 
--- The research pass is offered no catalog tool. It searches through
--- web_search and reads pages only through examine, both adhoc tools below,
--- so that no page body ever enters the research conversation: each page is
--- read by `### Read page`, called with a fresh conversation of its own. Lua
--- still calls web/search and web/fetch directly with tools.call.
-
--- The report the model fills in through the local tools below. Every
--- field is JSON data so it can be encoded at the end of the scan. A
--- section global, not a local: the Lua block after the prose reads it.
--- The block after the loop deletes evidence and rejected when empty.
 report = {
   document_id = var.document_id,
   author = var.author,
@@ -155,55 +206,58 @@ report = {
   rejected = {},
 }
 
--- The paper under scan, lowercased, and its family stem: p2826r4 and p2826.
--- Section globals: the sweep in the Lua block after the prose uses them.
 id_lower = var.document_id:lower()
 stem_lower = id_lower:match("^(%a+%d+)") or id_lower
+stem_upper = stem_lower:upper()
 
--- The paper's lines, for read_lines: the revision-history section is the
--- author's own record of what they changed and what they held to.
 tools.offer(read_lines_tool(split_lines(store.read("paper.md")),
   "Read a range of lines from the paper under scan, by 1-based line number. Use it on the revision history section to see what changed between revisions. At most "
     .. READ_LINES_MAX .. " lines per call."))
 
--- Index of the one prior-revision item, once a reader records it.
 revision_item = nil
+```
 
--- The position is the model's text reply to a message listing the
--- verified evidence, parsed here. It is not a tool: models.loop returns
--- as soon as the model answers in text, and asked for a tool call the
--- model answers in text often enough that the report went out with no
--- position at all. A section global: the Lua block after the prose calls it.
---
--- Returns the position text, or nil and the reason the reply does not
--- fit. evidence_count is the number of verified items.
-function parse_position(text, evidence_count)
-  local body = text:match("^%s*(.-)%s*$")
-  if body == "" then
-    return nil, "the reply is empty; it must be the position text"
-  end
-  local cited, bad = false, {}
-  for num in body:gmatch("%[(%d+)%]") do
-    local i = tonumber(num)
-    if i >= 1 and i <= evidence_count then cited = true else bad[#bad + 1] = num end
-  end
-  if #bad > 0 then
-    return nil, "the position cites evidence " .. table.concat(bad, ", ")
-      .. " but only items 1 to " .. evidence_count .. " exist; cite only the verified list"
-  end
-  if evidence_count > 0 and not cited then
-    return nil, "the position cites no evidence; end each factual sentence with the item numbers it rests on, like [1]"
-  end
-  return body
-end
+**Fetching pages and papers.**
 
--- Fetches a recorded URL to check that it resolves. Called on every
--- evidence item after the scan; the model's word is not enough.
--- A section global: the Lua block after the prose calls it.
--- The GitHub API allows 60 unauthenticated calls an hour, shared by every
--- run on the machine, and the scan reads the same thread when it examines
--- it and again when it dates its quotes, so API answers are cached for the
--- run. A refusal (rate limit) is not cached.
+`url_resolves(url, max_chars, raw)` is the one way the scan reads a page. It
+returns true and the fetched text (nil when the fetch tool will not render
+the content type, such as a PDF or a video, which still counts as resolved),
+or false and the failure reason. `max_chars` defaults to 1,500, enough to
+show the page resolved, and `PAGE_CHARS` (40,000, the fetch tool's own
+limit) is what the readers and checks ask for. `raw` asks for the whole page:
+by default fetch keeps only the main article and drops blocks like a paper's
+author header. A transient failure is retried twice, because a real page
+that timed out once was otherwise rejected as if it did not exist. Older
+open-std papers redirect wg21.link to plain http, which the fetch policy
+refuses as a downgrade, so the same path is retried over https.
+
+The GitHub API allows 60 unauthenticated calls an hour, shared by every run
+on the machine, and the scan reads the same thread when it examines it and
+again when it dates its quotes, so `fetch_once` caches API answers for the
+run. A refusal (rate limit) is not cached.
+
+WG21 papers come from the paper archive, the `wg21-papers` MCP server, never
+from the web. `paper_call` calls one archive tool and returns its decoded
+answer, or nil and the archive's reason, such as a paper that is not
+indexed. A paper URL is mapped to its document id; a family id (`p2826`, from
+a wg21.link link to the latest revision) becomes the latest revision the
+archive holds. `paper_page` returns the paper in the shape of a fetch result
+(an untrusted envelope holding `url:`, `truncated:`, and `extraction:` lines,
+a blank line, then the page), opening with a header of the document number,
+title, authors, and date, so the authorship and date checks after the scan
+read it as they read a paper's own header. Its `max_chars` cuts the text and
+marks it truncated; nil returns it whole. `paper_date` is the date a paper's
+header states: its document date, else the first of its mailing month.
+
+`article_text` is the page as fetch's article extraction returns it. The raw
+page keeps blocks extraction drops, such as a paper's author header and a
+thread's comments, but a page with inline style and script (a pandoc paper
+with MathJax) fills the whole raw result before its content starts, so the
+readers and the checks after the scan read both.
+
+```lua
+PAGE_CHARS = 40000
+
 local api_cache = {}
 
 local function fetch_once(url, max_chars, raw)
@@ -216,14 +270,8 @@ local function fetch_once(url, max_chars, raw)
   return out
 end
 
--- WG21 papers come from the paper archive, the wg21-papers MCP server,
--- never from the web: a paper URL is mapped to its document id and its
--- text is the archive's converted Markdown. A section global, like the
--- functions below: the Lua blocks after the prose use them too.
 PAPER_NAMESPACE = "wg21-papers"
 
--- Calls one paper archive tool and returns its decoded JSON answer, or nil
--- and the archive's reason, such as a paper that is not indexed.
 function paper_call(tool, arguments)
   local ok, out = pcall(tools.call, "mcp/call_dynamic_tool",
     { namespace = PAPER_NAMESPACE, toolName = tool, arguments = arguments })
@@ -238,9 +286,6 @@ function paper_call(tool, arguments)
   return data
 end
 
--- The document id a paper URL names. A family id (p2826, from a wg21.link
--- link to the latest revision) becomes the latest revision the archive
--- holds.
 local function archive_id(url_id)
   if not url_id:match("^[pd]%d+$") then return url_id end
   local chain, err = paper_call("list_revisions", { paper = url_id })
@@ -253,21 +298,12 @@ local function archive_id(url_id)
   return latest
 end
 
--- The date a paper's header states: its document date, else the first of
--- its mailing month.
-local function paper_date(meta)
+function paper_date(meta)
   local date = tostring(meta.document_date or "")
   if date == "" and tostring(meta.mailing_date or "") ~= "" then date = meta.mailing_date .. "-01" end
   return date
 end
 
--- The paper a paper URL names, read from the archive, as true and text in
--- the shape of a fetch result (an untrusted envelope holding url:,
--- truncated:, and extraction: lines, a blank line, then the page), or
--- false and the reason. The page opens with a header of the paper's
--- document number, title, authors, and date, so the authorship and date
--- checks after the scan read it as they read a paper's own header.
--- max_chars cuts the text and marks it truncated; nil returns it whole.
 function paper_page(url, max_chars)
   local id, err = archive_id(paper_url_id(url))
   if not id then return false, err end
@@ -286,20 +322,12 @@ function paper_page(url, max_chars)
     .. "\nDate: " .. paper_date(meta) .. "\n\n" .. text)
 end
 
--- Returns true and the fetched text (nil when the fetch tool will not
--- render the content type), or false and the failure reason. A WG21
--- paper URL is read whole from the paper archive instead of fetched. max_chars
--- defaults to 1500, enough to show the page resolved. raw asks for the
--- whole page: by default fetch keeps only the main article and drops
--- blocks like a paper's author header.
 function url_resolves(url, max_chars, raw)
   if paper_url_id(url) then return paper_page(url, nil) end
   max_chars = max_chars or 1500
   raw = raw == true
   local out, hard = fetch_once(url, max_chars, raw)
   if not out then return false, hard end
-  -- Two retries on a transient failure: a real page that timed out once
-  -- was rejected as if it did not exist.
   for _ = 1, 2 do
     if not (out:match("timed out; try again") or out:match("network error; try a different URL")
       or out:match("could not be read; try again")) then
@@ -309,8 +337,6 @@ function url_resolves(url, max_chars, raw)
     if not again then return false, hard2 end
     out = again
   end
-  -- Older open-std papers redirect wg21.link to plain http, which the fetch
-  -- policy refuses as a downgrade. The same path is served over https.
   local downgrade = out:match("redirect from %S+ to http://(%S+) refused: refusing https to http downgrade")
   if downgrade then
     local retry, hard3 = fetch_once("https://" .. downgrade, max_chars, raw)
@@ -318,16 +344,28 @@ function url_resolves(url, max_chars, raw)
     out = retry
   end
   if out:match("\nurl: %S+") then return true, out end
-  -- A response the fetch tool refuses to render (PDF, video) still resolved.
   if out:match("content type %S+ from %S+ cannot be returned") then return true, nil end
   local reason = out:match("<untrusted_input_[^>]*>\n(.-)\n</untrusted_input_") or out
   return false, clip((reason:gsub("[\t\n]", " ")), 200)
 end
 
--- Page and quote text compared as words: case, whitespace, typographic
--- quotes, character references, and Markdown markup the page conversion
--- adds are all ignored. Section globals: the verification in the Lua
--- block after the prose uses them too.
+function article_text(url)
+  if paper_url_id(url) then return nil end
+  local ok, text = url_resolves(url, PAGE_CHARS, false)
+  return ok and text or nil
+end
+```
+
+**Matching quotes.**
+
+Page and quote text are compared as words: case, whitespace, typographic
+quotes, character references, and the Markdown markup the page conversion
+adds are all ignored. `quote_on_page` is true when the quote's first or last
+eight words appear in the text; the two ends cover a link or a line break
+inside the passage. A quote under three words is too short to find, so it
+counts as found.
+
+```lua
 function comparable(s)
   s = decode_entities(s)
   s = s:gsub("\226\128[\152\153]", "'"):gsub("\226\128[\156\157]", '"')
@@ -337,15 +375,12 @@ function comparable(s)
   return s
 end
 
-local function quote_words(quote)
+function quote_words(quote)
   local words = {}
   for w in comparable(quote):gmatch("%S+") do words[#words + 1] = w end
   return words
 end
 
--- True when the quote's first or last eight words appear in text; the two
--- ends cover a link or a line break inside the passage. A quote under
--- three words is too short to find, so it counts as found.
 function quote_on_page(quote, page)
   local words = quote_words(quote)
   if #words < 3 then return true end
@@ -354,36 +389,25 @@ function quote_on_page(quote, page)
   return text:find(table.concat(words, " ", 1, n), 1, true) ~= nil
     or text:find(table.concat(words, " ", #words - n + 1, #words), 1, true) ~= nil
 end
+```
 
--- Dating. An item's year is the year its quoted words were written or
--- said, or, for an item with no quote, the year of the act its note
--- describes. The model reads the year off the page, but a thread page
--- carries one date per post and code hosts render their dates with
--- script, so the verification re-derives the year wherever a source
--- states it outright, and a derived year replaces the model's. In order:
---   1. The API record of the post that holds the quote: GitHub issue and
---      pull request threads and commits, Hacker News, Discourse.
---   2. The document's own date: a WG21 paper's header date, else its
---      mailing directory; a dated archive or blog path (/2024/06/).
---   3. For an item with no quote on a code host: the record the act
---      left, which also supplies the quote (code_host_act).
---
--- Every item leaves verification with a quote. An item recorded without
--- one gets the text of the record its act left (a commit message, the
--- title of an issue the speaker opened) or, when the record has no text,
--- a locator in square brackets naming it: [commit <sha> in <repository>].
--- A locator is never anyone's words and has no quote_by.
-local MIN_YEAR, MAX_YEAR = 1990, 2100
+**Reading API records.**
 
--- Characters fetched per page or API document. A section global: the
--- verification in the Lua block after the prose uses it too.
-PAGE_CHARS = 40000
+The scan reads JSON from the GitHub, GitLab, Hacker News, Discourse, and
+YouTube APIs as text, through the fetch tool, without decoding the whole
+document:
 
-local function plausible(year)
-  local n = tonumber(year or "")
-  return n and n >= MIN_YEAR and n <= MAX_YEAR and year or nil
-end
+- `json_unescape` decodes a JSON string body's escapes, and undoes the fetch
+  envelope's escaping of every `<` as `&lt;`.
+- `json_string` is the decoded value of the first string-valued key at or
+  after a position.
+- `without_milestone` drops a GitHub milestone object, whose own creator and
+  dates precede an issue's fields and would be read as the issue's.
+- `fetch_json` is the body of a fetched JSON response, or nil.
+- `url_parts` splits a URL into its lowercased host (`www.` dropped) and its
+  path segments, with query and fragment removed.
 
+```lua
 local function utf8_char(cp)
   if cp < 0x80 then return string.char(cp) end
   if cp < 0x800 then return string.char(0xC0 | (cp >> 6), 0x80 | (cp & 0x3F)) end
@@ -392,30 +416,104 @@ end
 
 local JSON_ESCAPES = { n = "\n", r = "\r", t = "\t", b = "", f = "" }
 
--- A JSON string body with its escapes decoded. The fetch envelope escapes
--- every < as &lt;, so that is undone too.
 function json_unescape(s)
   s = s:gsub("\\u(%x%x%x%x)", function(h) return utf8_char(tonumber(h, 16)) end)
   s = s:gsub("\\(.)", function(c) return JSON_ESCAPES[c] or c end)
   return (s:gsub("&lt;", "<"))
 end
 
--- The readable text of a stretch of JSON: escapes decoded and the HTML
--- inside post bodies (Hacker News, Discourse) stripped.
-local function json_text(s)
-  return (json_unescape(s):gsub("<[^>]*>", " "))
+function json_string(json, key, from)
+  local _, open = json:find('"' .. key .. '"%s*:%s*"', from or 1)
+  if not open then return nil end
+  local i = open + 1
+  while i <= #json do
+    local c = json:sub(i, i)
+    if c == "\\" then
+      i = i + 2
+    elseif c == '"' then
+      return json_unescape(json:sub(open + 1, i - 1))
+    else
+      i = i + 1
+    end
+  end
+  return nil
 end
 
--- The body of a fetched JSON response, or nil when the fetch failed.
-local function fetch_json(url)
+function without_milestone(json)
+  return (json:gsub('"milestone"%s*:%s*%b{}', ""))
+end
+
+function fetch_json(url)
   local ok, out = url_resolves(url, PAGE_CHARS, false)
   return ok and out or nil
 end
 
--- The year of the record in json whose text holds the quote. Each record
--- in these APIs states its date field before its text, so the text
--- between one date and the next belongs to the first. A reply that
--- quotes the post holds the passage too, so the earliest match wins.
+function url_parts(url)
+  local u = url:gsub("[#?].*$", ""):gsub("/+$", "")
+  local host, path = u:match("^https?://([^/]+)(/.*)$")
+  if not host then return nil, {} end
+  host = host:lower():gsub("^www%.", "")
+  local seg = {}
+  for s in path:gmatch("[^/]+") do seg[#seg + 1] = s end
+  return host, seg
+end
+```
+
+**Dating and citing evidence.**
+
+An item's year is the year its quoted words were written or said, or, for an
+item with no quote, the year of the act its note describes. The model reads
+the year off the page, but a thread page carries one date per post and code
+hosts render their dates with script, so the verification re-derives the
+year wherever a source states it outright, and a derived year replaces the
+model's. In order:
+
+1. The API record of the post that holds the quote: GitHub issue and pull
+   request threads and commits, Hacker News, Discourse (`quote_sources`).
+   Each record in these APIs states its date before its text, so the text
+   between one date and the next belongs to the first. A reply that quotes
+   the post holds the passage too, so the earliest match wins
+   (`quote_year_in_json`). A GitHub thread's comment pages are the same
+   pages `examine` read, so they come from the API cache.
+2. The document's own date: a WG21 paper's header date (a January mailing
+   carries papers dated the December before), else its mailing directory; a
+   dated archive or blog path such as `/2024/06/` (`document_year`).
+3. For an item with no quote on a code host: the record the act left, which
+   also supplies the quote (`code_host_act`).
+
+Every item leaves verification with a quote. An item recorded without one
+gets the text of the record its act left or, when the record has no text, a
+locator in square brackets naming it, such as `[commit <sha> in
+<repository>]`. A locator is never anyone's words and has no `quote_by`.
+`code_host_act` finds the record:
+
+- A commit is quoted by its message's first line. A merge commit's message
+  is generated by the host and describes the merged contributor's work, so
+  the speaker's own commit is preferred to a merge.
+- An issue, pull request, or gist is quoted by its title (or description)
+  when the account that opened it is the item's speaker; those are the
+  words of the account that opened it.
+- A repository, or a path in it, is cited by a locator and dated by the
+  author's newest commit there, whose message is about whatever they last
+  changed, not about this paper.
+- A compare link's head is a branch, `user:branch`, or `user:repo:branch`.
+- A release is cited by a locator naming its tag.
+
+`date_and_cite` returns the year a source states outright (nil when none
+does) and, for an item with no quote, the quote and `quote_by` to fill in.
+
+```lua
+local MIN_YEAR, MAX_YEAR = 1990, 2100
+
+local function plausible(year)
+  local n = tonumber(year or "")
+  return n and n >= MIN_YEAR and n <= MAX_YEAR and year or nil
+end
+
+local function json_text(s)
+  return (json_unescape(s):gsub("<[^>]*>", " "))
+end
+
 local function quote_year_in_json(json, quote, field)
   if #quote_words(quote) < 3 then return nil end
   local pattern = '"' .. field .. '"%s*:%s*"(%d%d%d%d)%-'
@@ -437,20 +535,6 @@ local function quote_year_in_json(json, quote, field)
   return plausible(earliest)
 end
 
--- A URL split into its lowercased host (www. dropped) and path segments,
--- with query and fragment removed.
-function url_parts(url)
-  local u = url:gsub("[#?].*$", ""):gsub("/+$", "")
-  local host, path = u:match("^https?://([^/]+)(/.*)$")
-  if not host then return nil, {} end
-  host = host:lower():gsub("^www%.", "")
-  local seg = {}
-  for s in path:gmatch("[^/]+") do seg[#seg + 1] = s end
-  return host, seg
-end
-
--- The API documents that hold the posts of a thread page, each with the
--- date field its records use.
 local function quote_sources(url)
   local host, seg = url_parts(url)
   local q = {}
@@ -459,7 +543,6 @@ local function quote_sources(url)
     local kind, ref = seg[3], seg[4]
     if (kind == "issues" or kind == "pull") and ref and ref:match("^%d+$") then
       q[#q + 1] = { base .. "/issues/" .. ref, "created_at" }
-      -- The same pages examine read, so they come from the API cache.
       for _, page in ipairs(thread_pages[base .. "/issues/" .. ref] or { 1 }) do
         q[#q + 1] = { base .. "/issues/" .. ref .. "/comments?per_page=" .. GITHUB_COMMENTS_PER_PAGE
           .. "&page=" .. page, "created_at" }
@@ -475,7 +558,6 @@ local function quote_sources(url)
     local id = url:match("[?&]id=(%d+)")
     if id then q[#q + 1] = { "https://hn.algolia.com/api/v1/items/" .. id, "created_at" } end
   elseif host then
-    -- Discourse topics: /t/<slug>/<id> or /t/<id>.
     local id = seg[1] == "t" and ((seg[3] and seg[3]:match("^%d+$")) or (seg[2] and seg[2]:match("^%d+$")))
     if id then
       q[#q + 1] = { url:match("^(https?://[^/]+)") .. "/t/" .. id .. ".json", "created_at" }
@@ -484,9 +566,6 @@ local function quote_sources(url)
   return q
 end
 
--- The document's own year: a WG21 paper's header date (a January mailing
--- carries papers dated the December before), else its mailing directory;
--- a dated archive or blog path. page is the raw fetched page, or nil.
 local function document_year(url, page)
   if paper_url_id(url) then
     local head = page and page:sub(1, 6000) or ""
@@ -498,36 +577,11 @@ local function document_year(url, page)
     or plausible(path:match("/(%d%d%d%d)/[01]%d/"))
 end
 
--- The first `field` date in json, after dropping milestone objects, whose
--- own created_at precedes an issue's.
 local function first_year(json, field)
-  json = json:gsub('"milestone"%s*:%s*%b{}', "")
+  json = without_milestone(json)
   return plausible(json:match('"' .. field .. '"%s*:%s*"(%d%d%d%d)%-'))
 end
 
--- The decoded value of the first string-valued `key` in json at or after
--- position from, or nil.
-local function json_string(json, key, from)
-  local _, open = json:find('"' .. key .. '"%s*:%s*"', from or 1)
-  if not open then return nil end
-  local i = open + 1
-  while i <= #json do
-    local c = json:sub(i, i)
-    if c == "\\" then
-      i = i + 2
-    elseif c == '"' then
-      return json_unescape(json:sub(open + 1, i - 1))
-    else
-      i = i + 1
-    end
-  end
-  return nil
-end
-
--- The commits in a GitHub or GitLab commit list or single-commit document,
--- newest first, as {sha, name, date, message}. Each commit object opens
--- with its hash (sha on GitHub, id on GitLab); the nested tree and parent
--- objects that also open with a hash carry no author and are dropped.
 local function commits_in(json, gitlab)
   local opener = gitlab and '{%s*"id"%s*:%s*"%x+"' or '{%s*"sha"%s*:%s*"%x+"'
   local starts, pos = {}, 1
@@ -551,19 +605,11 @@ local function commits_in(json, gitlab)
   return out
 end
 
--- The display name of a GitHub account, else its login.
 local function github_name(login)
   local json = login and fetch_json("https://api.github.com/users/" .. login)
   return json and json_string(json, "name") or login
 end
 
--- A quote-less item's act on a code host, dated and cited from the same
--- record: the newest commit by the author on the ref and path the page
--- shows, quoted by its message's first line, or the issue, pull request,
--- or gist quoted by its title or description when the account that
--- opened it is the item's speaker. A record with no text is cited by a
--- [kind id in repository] locator. Returns year, quote, quote_by; each
--- may be nil.
 local function code_host_act(e)
   local host, seg = url_parts(e.url)
   local author_item = e.speaker == "author"
@@ -573,8 +619,6 @@ local function code_host_act(e)
     local json = fetch_json(api)
     if not json then return nil end
     local list = commits_in(json, gitlab)
-    -- A merge commit's message is generated by the host and describes the
-    -- merged contributor's work, so the speaker's own commit is preferred.
     local chosen, merge = nil, nil
     for _, c in ipairs(list) do
       if speaker_ok(c.name) then
@@ -596,8 +640,6 @@ local function code_host_act(e)
     return year, "[commit " .. chosen.sha .. " in " .. repo_url .. "]"
   end
 
-  -- An issue, pull request, or gist: its title (or description) is the
-  -- words of the account that opened it.
   local function from_opened(json, what, text_key, repo_url)
     local year = first_year(json, "created_at")
     local text = json_string(json, text_key)
@@ -616,9 +658,6 @@ local function code_host_act(e)
     local base = "https://api.github.com/repos/" .. owner .. "/" .. repo
     local kind, ref = seg[3], seg[4]
     if kind == nil then
-      -- A repository or a path in it is cited by locator, dated by the
-      -- author's newest commit: that commit's message is about whatever
-      -- they last changed, not about this paper.
       return (from_commits(base .. "/commits?per_page=100", false, repo_url))
     elseif (kind == "tree" or kind == "blob") and ref then
       local file = table.concat(seg, "/", 5)
@@ -636,7 +675,6 @@ local function code_host_act(e)
         return first_year(json, "published_at"), "[release " .. seg[5] .. " in " .. repo_url .. "]"
       end
     elseif kind == "compare" and ref then
-      -- The head is branch, user:branch, or user:repo:branch.
       local head = ref:match("%.%.%.?(.+)$") or ref
       local parts = {}
       for p in head:gmatch("[^:]+") do parts[#parts + 1] = p end
@@ -678,10 +716,6 @@ local function code_host_act(e)
   return nil
 end
 
--- The year a source states outright for item e, and for an item with no
--- quote, the quote and quote_by the scan fills in: the record's own text
--- when it has any, else a locator. page is the raw fetched page, or nil
--- for a PDF. The year is nil when no source states one.
 function date_and_cite(e, page)
   if e.quote then
     for _, source in ipairs(quote_sources(e.url)) do
@@ -696,9 +730,25 @@ function date_and_cite(e, page)
   if not quote then quote = "[" .. e.kind .. " in " .. e.url .. "]" end
   return year, quote, quote_by
 end
+```
 
--- Outline entries that look like the paper's own revision record, so the
--- model can read_lines straight into them.
+**Revision context.**
+
+Three values go into the evidence rules and the procedure through `var`:
+
+- `history_outline`: the outline entries that look like the paper's own
+  revision record, so the model can `read_lines` straight into them.
+- `revision_list`: the paper's earlier revisions that the archive holds,
+  oldest first, with the authors each one lists, so the research pass can
+  examine the revision arc without guessing a URL. The chain stops at the
+  paper under scan.
+- `author_joined`: papers change hands, and a tracker poll records "Author
+  Position" for whoever held the paper then. When the author first appears
+  on a later revision than the first, the readers are told when, so a
+  predecessor's votes and arguments are not credited to them. Empty when the
+  author wrote the first revision.
+
+```lua
 local history = {}
 for line in store.read("paper-outline.md"):gmatch("[^\n]+") do
   if line:lower():match("revision") or line:lower():match("history")
@@ -708,9 +758,6 @@ for line in store.read("paper-outline.md"):gmatch("[^\n]+") do
 end
 var.history_outline = #history > 0 and table.concat(history, "\n") or "(no revision-history heading found)"
 
--- The paper's earlier revisions that the archive holds, oldest first, with
--- the authors each one lists, so the research pass can examine the revision
--- arc without guessing a URL. The chain stops at the paper under scan.
 local revisions = {}
 local first_revision, joined = nil, nil
 local chain = paper_call("list_revisions", { paper = var.document_id })
@@ -727,9 +774,6 @@ for _, r in ipairs(chain and chain.revisions or {}) do
     end
   end
 end
--- Papers change hands, and a tracker poll records "Author Position" for
--- whoever held the paper then. The readers are told when this author
--- first appears, so a predecessor's votes are not credited to them.
 if joined and joined.id ~= first_revision then
   var.author_joined = var.author .. " first appears as an author on " .. joined.id:upper() .. " ("
     .. joined.date .. "). Earlier revisions were written by others: a poll's \"Author Position\" or an"
@@ -739,12 +783,18 @@ else
 end
 var.revision_list = #revisions > 0 and table.concat(revisions, "\n")
   or "(the paper archive holds no earlier revision of this paper)"
+```
 
--- The papers in the archive matching query, as a list of {id, title, url,
--- authors, date, match}, or nil and the failure. Metadata matches come
--- first, then full-text matches not already listed. by_author restricts
--- both to papers that list the author. A section global: the sweep after
--- the prose uses it too.
+**Searching the paper archive.**
+
+`paper_hits(query, by_author)` returns the archive's papers matching a query
+as a list of `{id, title, url, authors, date, match}`, or nil and the
+failure. Metadata matches come first, then full-text matches not already
+listed; `by_author` restricts both to papers that list the author. The
+`search_papers` tool shows the model the same hits, leaving out the paper
+under scan; the sweep uses `paper_hits` directly.
+
+```lua
 PAPER_SEARCH_LIMIT = 10
 
 function paper_hits(query, by_author)
@@ -794,14 +844,25 @@ tools.offer(tools.adhoc({
   if #lines == 0 then return "no papers found" end
   return untrusted(table.concat(lines, "\n"))
 end))
+```
 
--- What the search engine said about each result, by normalized URL: a
--- video page has no readable text, so its reader is shown this instead.
+**Searching the web.**
+
+`search_hits(query)` returns one search's results as a list of `{title, url,
+description, age, snippet}`, or nil and the failure; `web/search` answers
+with compact JSON inside the untrusted envelope, which is cut out and
+decoded. It also remembers what the search engine said about each result in
+`search_notes`, by normalized URL: a video page has no readable text, so its
+reader is shown this instead.
+
+The `web_search` tool shows the research conversation each hit's title, URL,
+date, and a description clipped to `SEARCH_TEXT_CHARS`, without the
+backend's full snippet list. The page itself is read by `examine`, so the
+hit only has to show whether the page is worth examining.
+
+```lua
 search_notes = {}
 
--- The results of one search as a list of {title, url, description, age,
--- snippet}, or nil and the failure. web/search answers with compact JSON
--- inside the untrusted envelope; the JSON is cut out and decoded.
 function search_hits(query)
   local ok_call, out = pcall(tools.call, "web/search", { query = query, count = 10 })
   if not ok_call then return nil, tostring(out) end
@@ -824,10 +885,6 @@ function search_hits(query)
   return hits
 end
 
--- What the research conversation sees of a search: each hit's title, URL,
--- date, and a clipped description, without the backend's full snippet
--- list. The page itself is read by examine, so the hit only has to show
--- whether the page is worth examining.
 SEARCH_TEXT_CHARS = 300
 
 tools.offer(tools.adhoc({
@@ -849,83 +906,33 @@ tools.offer(tools.adhoc({
   end
   return untrusted(table.concat(lines, "\n"))
 end))
+```
 
--- examine: one page, one reader. The handler fetches the page twice, raw
--- and as article extraction, as the verification after the scan does, so
--- the reader quotes from the text the quote check reads, then calls
--- `### Read page` with a message holding only the evidence rules, the
--- items already recorded, and that page. A handler cannot run a loop of
--- its own, but a called section is its own section entry with its own
--- conversation. The reader records through its own record_evidence tool
--- and returns the items as JSON, which are appended to the report here.
--- The research conversation receives one line per page, so it stays small
--- however many pages the scan reads. Each URL is examined once; examined
--- holds the answers.
-examined = {}
-EXAMINE_REPLY_CHARS = 300
--- The most of a paper's text a reader is shown; the verification after the
--- scan reads the whole paper.
-READER_PAPER_CHARS = 150000
+**GitHub threads and videos.**
 
--- The page as fetch's article extraction returns it, or nil. The raw page
--- keeps blocks extraction drops, such as a paper's author header and a
--- thread's comments, but a page with inline style and script (a pandoc
--- paper with MathJax) fills the whole raw result before its content
--- starts, so readers and the checks after the scan read both.
-function article_text(url)
-  if paper_url_id(url) then return nil end
-  local ok, text = url_resolves(url, PAGE_CHARS, false)
-  return ok and text or nil
-end
+Two kinds of page are script with no readable text, so the fetch tool's page
+is useless to a reader and each is read through an API instead.
 
--- The items recorded so far, for a reader to avoid recording again.
-local function recorded_listing()
-  if #report.evidence == 0 then return "(none yet)" end
-  local out = {}
-  for i, e in ipairs(report.evidence) do
-    out[#out + 1] = string.format("%d. %s, speaker %s: %s (%s)", i, e.kind, e.speaker, e.title, e.url)
-  end
-  return table.concat(out, "\n")
-end
+A GitHub issue or pull request page is mostly script data: the comments,
+where polls and the author's replies live, start past the fetch limit.
+`github_thread_text` reads the thread through the GitHub API, as the title
+and then each post as author, date, and text; nil when the URL is not a
+thread or the API fails. A page of comments must fit the fetch limit of
+40,000 characters, and each comment carries about 3,000 characters of user
+and reaction fields, so comments are read `GITHUB_COMMENTS_PER_PAGE` at a
+time. A long tracker thread puts the polls of the current author's era at
+the end, so `thread_page_numbers` picks the first page (the paper's early
+history) and the last pages, up to `GITHUB_THREAD_PAGES` in all, and records
+them in `thread_pages` so the dating reads the same pages from the cache.
 
--- Runs the reader on one page and appends what it recorded to the report.
--- Returns the reader's one-line reply.
--- The paper's tracker issue holds a poll for each revision, and the
--- reader may record more of them than from any other page. tracker_url is
--- set by the Lua block after the prose before it examines the issue.
-TRACKER_ITEM_LIMIT = 4
-tracker_url = nil
+A YouTube video page is script too, so a talk was never recorded from one.
+`youtube_text` gives the video's title and channel from YouTube's oEmbed API
+and its description from the search result that surfaced it.
 
-local function read_page(url, key, final, text)
-  local job = json.encode({
-    text = text, url = url, key = key, final = final,
-    base = #report.evidence, revision_item = revision_item,
-    limit = (tracker_url and key == normalize_url(tracker_url)) and TRACKER_ITEM_LIMIT or nil,
-  })
-  local called, out = pcall(call, "### Read page", job)
-  if not called then return "reader ended early: " .. tostring(out) end
-  local decoded, result = pcall(json.decode, out)
-  if not decoded or type(result) ~= "table" then
-    return "reader returned no result: " .. clip(tostring(out), 200)
-  end
-  for _, e in ipairs(result.items or {}) do
-    report.evidence[#report.evidence + 1] = e
-    if e.kind == "prior revision" then revision_item = #report.evidence end
-  end
-  return tostring(result.reply or "")
-end
-
--- A GitHub issue or pull request page is mostly script data: the comments,
--- where polls and the author's replies live, start past the fetch limit.
--- The thread is read through the API instead, as one line of author, date,
--- and text per post. Nil when the URL is not a thread or the API fails.
+```lua
 GITHUB_COMMENTS_PER_PAGE = 10
 GITHUB_THREAD_PAGES = 4
 
--- The comment pages read for each thread, by API base URL. A long tracker
--- thread puts the polls of the current author's era at the end, so the
--- first page (the paper's early history) and the last pages are read.
--- quote_sources reads the same pages, so they come from the cache.
 thread_pages = {}
 
 function thread_page_numbers(base, issue)
@@ -947,11 +954,7 @@ function github_thread_text(url)
   local base = "https://api.github.com/repos/" .. seg[1] .. "/" .. seg[2] .. "/issues/" .. seg[4]
   local ok_issue, issue = url_resolves(base, PAGE_CHARS, false)
   if not ok_issue or not issue or not json_string(issue, "title") then return nil end
-  -- A milestone object, with its own creator and dates, precedes the
-  -- issue's own fields.
-  issue = issue:gsub('"milestone"%s*:%s*%b{}', "")
-  -- A page of comments must fit the fetch limit of 40,000 characters, and
-  -- each comment carries about 3,000 of user and reaction fields.
+  issue = without_milestone(issue)
   local pages = {}
   for _, page in ipairs(thread_page_numbers(base, issue)) do
     local ok_page, text = url_resolves(base .. "/comments?per_page=" .. GITHUB_COMMENTS_PER_PAGE
@@ -980,10 +983,7 @@ function github_thread_text(url)
   return "url: " .. url .. "\nextraction: github-api\n\n" .. table.concat(posts, "\n\n---\n\n")
 end
 
--- A YouTube video page is script with no readable text, so a talk was
--- never recorded from one. Its title and channel come from the oEmbed API,
--- and its description from the search result that surfaced it.
-local function youtube_text(url)
+function youtube_text(url)
   local host = url_parts(url)
   local id = (host == "youtube.com" or host == "m.youtube.com") and url:match("[?&]v=([%w_%-]+)")
     or (host == "youtu.be" and url:match("youtu%.be/([%w_%-]+)"))
@@ -997,12 +997,70 @@ local function youtube_text(url)
     .. (json_string(embed, "author_name") or "") .. "\n\nSearch result:\n"
     .. (search_notes[normalize_url(url)] or "(none)")
 end
+```
 
--- Examines one page and returns the one-line answer the research pass
--- sees. A section global: the Lua block after the prose calls it for the
--- paper's tracker issue before the research pass starts.
+**Examining a page.**
+
+`examine` is one page, one reader. `examine_page` loads the page (a WG21
+paper from the archive, up to `READER_PAPER_CHARS`; anything else as the raw
+page and as article extraction, the same text the quote check reads after
+the scan; a GitHub thread or a video through its API) and calls
+`### Read page` with a message holding only the evidence rules, the items
+already recorded (so the reader does not record them again), and that page.
+A tool handler cannot run a loop of its own, but a called section is its own
+section entry with its own conversation. The reader records through its own
+`record_evidence` tool and returns the items as JSON, which `read_page`
+appends to the report.
+
+The research conversation receives one line per page, clipped to
+`EXAMINE_REPLY_CHARS`, so it stays small however many pages the scan reads.
+Each URL is examined once; `examined` holds the answers, so a second call
+returns the first answer. The paper under scan is skipped.
+
+The paper's tracker issue holds a poll for each revision, so its reader may
+record up to `TRACKER_ITEM_LIMIT` items, more than from any other page.
+`tracker_url` is set by the block that examines the tracker issue, before the
+research pass starts; `examine_page` is a section global so that block can
+call it.
+
+```lua
+examined = {}
+EXAMINE_REPLY_CHARS = 300
+READER_PAPER_CHARS = 150000
+
+local function recorded_listing()
+  if #report.evidence == 0 then return "(none yet)" end
+  local out = {}
+  for i, e in ipairs(report.evidence) do
+    out[#out + 1] = string.format("%d. %s, speaker %s: %s (%s)", i, e.kind, e.speaker, e.title, e.url)
+  end
+  return table.concat(out, "\n")
+end
+
+TRACKER_ITEM_LIMIT = 4
+tracker_url = nil
+
+local function read_page(url, key, final, text)
+  local job = json.encode({
+    text = text, url = url, key = key, final = final,
+    base = #report.evidence, revision_item = revision_item,
+    limit = (tracker_url and key == normalize_url(tracker_url)) and TRACKER_ITEM_LIMIT or nil,
+  })
+  local called, out = pcall(call, "### Read page", job)
+  if not called then return "reader ended early: " .. tostring(out) end
+  local decoded, result = pcall(json.decode, out)
+  if not decoded or type(result) ~= "table" then
+    return "reader returned no result: " .. clip(tostring(out), 200)
+  end
+  for _, e in ipairs(result.items or {}) do
+    report.evidence[#report.evidence + 1] = e
+    if e.kind == "prior revision" then revision_item = #report.evidence end
+  end
+  return tostring(result.reply or "")
+end
+
 function examine_page(raw_url, why)
-  local url = tostring(raw_url or ""):match("^%s*(.-)%s*$")
+  local url = trim(tostring(raw_url or ""))
   if not url:match("^https?://[^/]+") then
     return "refused: url must be an http(s) URL from a search result"
   end
@@ -1079,6 +1137,15 @@ tools.offer(tools.adhoc({
   return examine_page(a.url, a.why)
 end))
 ```
+
+**The evidence rules.**
+
+The rules below the break are the evidence rules, shared by the research pass
+and every page reader. The block after them keeps them in the section global
+`evidence_rules`: `examine_page` opens each reader's message with them, and
+the research pass's message opens with them too.
+
+---
 
 The author advocacy scan finds out whether one of a WG21 paper's authors
 has a *documented public position* on the paper's topic or core
@@ -1234,11 +1301,90 @@ What counts as a position, roughly in order of value:
    `implementation`, not `competing library`.
 
 ```lua
--- The evidence rules above, shared by the research pass and every page
--- reader. A section global: examine builds each reader's message from it,
--- and the research pass's message opens with it.
 evidence_rules = prose
 ```
+
+**The tracker issue and the paper's repositories.**
+
+Before the research pass starts, Lua examines two things the pass tended to
+miss and builds the notes its message carries about them.
+
+The paper's cplusplus/papers tracker issue holds the committee's polls on
+every revision and often the author's own comments, and the research pass
+skipped it on most papers, so Lua finds it through the GitHub search API and
+examines it. Each search item gives its `html_url` before its title, and a
+tracker issue's title opens with the paper number ("P3100 R9 ..."); other
+papers' issues can name it later in their titles, so only a title that opens
+with the stem counts. `tracker_answer` is the examine answer, or a note that
+no tracker issue was found.
+
+`paper_repos` holds the code repositories the paper itself links, as
+`host/owner/repo` keys, at most ten. An author's implementation is usually
+one of them, and a repository the paper does not link is kept as an
+implementation only when its page names the paper (checked after the scan).
+`repo_note` lists them for the research pass.
+
+```lua
+local function tracker_issue()
+  local found, out = url_resolves("https://api.github.com/search/issues?q=" .. stem_upper
+    .. "+repo:cplusplus/papers+in:title&per_page=10", PAGE_CHARS, false)
+  if not found or not out then return nil end
+  local pos = 1
+  while true do
+    local s, e, url = out:find('"html_url"%s*:%s*"(https://github%.com/cplusplus/papers/issues/%d+)"', pos)
+    if not s then return nil end
+    local title = out:match('"title"%s*:%s*"([^"]*)"', e) or ""
+    local head = title:upper():match("^%s*(%a+%d+)")
+    if head == stem_upper then return url end
+    pos = e + 1
+  end
+end
+
+tracker_url = tracker_issue()
+tracker_answer = "(no cplusplus/papers tracker issue was found for this paper)"
+if tracker_url then
+  tracker_answer = tracker_url .. ": " .. examine_page(tracker_url,
+    "The paper's own cplusplus/papers tracker issue. Its comments record the committee's polls on each"
+      .. " revision and can hold the author's own comments; record the author's comments and the polls that"
+      .. " decided the direction.")
+end
+note("tracker: " .. (tracker_url or "none"))
+
+paper_repos = {}
+local repo_lines = {}
+for link in store.read("paper.md"):gmatch("https?://[^%s%)%]>\"'`]+") do
+  local host, owner, repo = link:match("^https?://w?w?w?%.?(git[%a]+%.com)/([%w%-_.]+)/([%w%-_.]+)")
+  if (host == "github.com" or host == "gitlab.com") and repo then
+    local key = (host .. "/" .. owner .. "/" .. repo:gsub("%.git$", "")):lower()
+    if not paper_repos[key] and #repo_lines < 10 then
+      paper_repos[key] = true
+      repo_lines[#repo_lines + 1] = "- " .. link:gsub("[%.,;:]+$", "")
+    end
+  end
+end
+repo_note = #repo_lines > 0
+  and ("\n\nThe paper links these code repositories. Examine the ones that look like the author's"
+    .. " implementation of this paper, with the URL the paper gives:\n\n" .. table.concat(repo_lines, "\n"))
+  or ""
+```
+
+**The research pass.**
+
+The model gets the evidence rules, the procedure below the break, the
+tracker answer, the repository list, and its budget. The round cap
+(`max_tool_iterations`) applies to each `models.loop` call, and the research
+pass spent all of it on every paper, which used to skip the sweep, so the
+model is told its budget and the sweep runs after an exhausted pass too.
+
+The loop raises when it hits the round cap or the model fails. The evidence
+recorded so far is still worth keeping, so the failure is caught and the
+scan carries on. `research_ok` says whether the pass ended normally;
+`exhausted` is true when it ended on anything but a full context window (the
+round cap, a garbled tool name the model called, an empty reply), which
+would not take the sweep down the same way; `ended_early` holds the failure
+otherwise, for the report's fallback position.
+
+---
 
 You run the research pass of this scan. You find the pages; you do not
 read them or record evidence yourself. `examine` hands each page to a
@@ -1301,100 +1447,54 @@ Procedure:
    it and reply `done`.
 
 ```lua
--- The paper's cplusplus/papers tracker issue holds the committee's polls on
--- every revision and often the author's own comments, and the research
--- pass skipped it on most papers, so Lua finds it through the GitHub
--- search API and examines it before the pass starts. Each search item
--- gives its html_url before its title.
-local function tracker_issue()
-  local stem = var.document_id:upper():match("^(%a+%d+)") or var.document_id:upper()
-  local found, out = url_resolves("https://api.github.com/search/issues?q=" .. stem
-    .. "+repo:cplusplus/papers+in:title&per_page=10", PAGE_CHARS, false)
-  if not found or not out then return nil end
-  local pos = 1
-  while true do
-    local s, e, url = out:find('"html_url"%s*:%s*"(https://github%.com/cplusplus/papers/issues/%d+)"', pos)
-    if not s then return nil end
-    local title = out:match('"title"%s*:%s*"([^"]*)"', e) or ""
-    -- A tracker issue's title opens with the paper number ("P3100 R9 ...");
-    -- other papers' issues can name it later in their titles.
-    local head = title:upper():match("^%s*(%a+%d+)")
-    if head == stem then return url end
-    pos = e + 1
-  end
-end
-local tracker = tracker_issue()
-tracker_url = tracker
-local tracker_answer = "(no cplusplus/papers tracker issue was found for this paper)"
-if tracker then
-  tracker_answer = tracker .. ": " .. examine_page(tracker,
-    "The paper's own cplusplus/papers tracker issue. Its comments record the committee's polls on each"
-      .. " revision and can hold the author's own comments; record the author's comments and the polls that"
-      .. " decided the direction.")
-end
-note("tracker: " .. (tracker or "none"))
-
--- The code repositories the paper itself links, as owner/repo keys. An
--- author's implementation is usually one of them, and a repository the
--- paper does not link is kept as an implementation only when its page
--- names the paper (checked after the scan). A section global.
-paper_repos = {}
-local repo_lines = {}
-for link in store.read("paper.md"):gmatch("https?://[^%s%)%]>\"'`]+") do
-  local host, owner, repo = link:match("^https?://w?w?w?%.?(git[%a]+%.com)/([%w%-_.]+)/([%w%-_.]+)")
-  if (host == "github.com" or host == "gitlab.com") and repo then
-    local key = (host .. "/" .. owner .. "/" .. repo:gsub("%.git$", "")):lower()
-    if not paper_repos[key] and #repo_lines < 10 then
-      paper_repos[key] = true
-      repo_lines[#repo_lines + 1] = "- " .. link:gsub("[%.,;:]+$", "")
-    end
-  end
-end
-local repo_note = #repo_lines > 0
-  and ("\n\nThe paper links these code repositories. Examine the ones that look like the author's"
-    .. " implementation of this paper, with the URL the paper gives:\n\n" .. table.concat(repo_lines, "\n"))
-  or ""
-
--- The round cap applies to each models.loop call. The research pass
--- spent all of it on every paper, which skipped the sweep, so the model is
--- told its budget and the sweep runs after an exhausted pass too.
 local ROUND_BUDGET = 30
 messages:user(evidence_rules .. "\n\n" .. prose
   .. "\n\nThe paper's tracker issue, already examined: " .. tracker_answer
   .. repo_note
   .. "\n\nBudget: you have about " .. ROUND_BUDGET .. " tool rounds. Several calls in one round count as one"
   .. " round, so issue independent searches and examines together. Reply `done` before the budget runs out.")
--- The loop raises when it hits max_tool_iterations or the model fails.
--- The evidence recorded so far is still worth keeping, so catch it and
--- carry on to verification.
-local ok, err = pcall(models.loop)
-local ended_early = nil
-local exhausted = false
-if not ok then
+
+local err
+research_ok, err = pcall(models.loop)
+ended_early = nil
+exhausted = false
+if not research_ok then
   note("evidence loop ended early: " .. tostring(err))
-  -- The sweep still runs after the round cap, a garbled tool name the
-  -- model called (out_of_scope_tool), or an empty reply; only a full
-  -- context window would take the second pass down the same way.
   local kind = type(err) == "table" and err.kind or ""
   exhausted = kind ~= "context_exhausted" and not tostring(err):find("context", 1, true)
   if not exhausted then ended_early = tostring(err) end
 end
+```
 
--- The sweep. Whether the model searches beyond the committee archives is
--- left to sampling, and at temperature 1.0 it often stops after the
--- revision history, so Lua runs one query per venue kind itself and hands
--- the model the hits to examine. The queries describe the
--- venue in words rather than naming sites, so the search engine picks the
--- sites. Skipped when the first pass failed for any reason but its round
--- cap, since the same failure would take the second pass down too.
+**The sweep.**
 
-if ok or exhausted then
+Whether the model searches beyond the committee archives is left to
+sampling, and at temperature 1.0 it often stops after the revision history,
+so Lua runs one search per venue kind itself and hands the model the hits to
+examine. The queries describe the venue in words rather than naming sites,
+so the search engine picks the sites. Each venue gets its own share of the
+list, `SWEEP_PER_VENUE` results: with one cap over all of them, the first
+queries filled it and the talks and papers never reached the model. Three
+searches of the paper archive add `SWEEP_PAPERS_PER_SEARCH` papers each: the
+author's papers on the subject, the author's papers that cite this paper,
+and papers by others that cite it, where answers and critiques live. URLs
+already recorded or examined, the paper under scan, and its own revisions
+(the revision list covers them) are left out.
+
+The sweep is skipped when the research pass failed on a full context window,
+since the same failure would take the second pass down too. A backend fault
+(502) or a garbled tool name ends the sweep loop with the conversation still
+usable and the candidates left unexamined, so the pass is resumed up to
+twice. `examine` answers a URL it already read from its record, so a resumed
+pass costs nothing twice.
+
+```lua
+if research_ok or exhausted then
   local subject = var.title ~= "" and var.title or var.document_id
-  local stem = var.document_id:upper():match("^(%a+%d+)") or var.document_id
   local who = '"' .. var.author .. '"'
   local sweep = {
     { venue = "tech news and link-aggregator comment threads", query = who .. " " .. subject .. " comments discussion" },
-    { venue = "the paper discussed by others", query = stem .. " WG21 " .. subject .. " C++ proposal discussion" },
+    { venue = "the paper discussed by others", query = stem_upper .. " WG21 " .. subject .. " C++ proposal discussion" },
     { venue = "C++ forums and community boards", query = subject .. " C++ proposal forum " .. var.author },
     { venue = "the author's own blog and posts", query = who .. " blog " .. subject },
     { venue = "conference talks", query = who .. " talk " .. subject .. " C++ conference" },
@@ -1403,15 +1503,11 @@ if ok or exhausted then
     { venue = "other conference talks and keynotes", query = who .. " C++Now OR \"C++ on Sea\" OR ACCU OR keynote" },
     { venue = "podcasts and interviews", query = who .. " C++ podcast interview CppCast" },
     { venue = "criticism of the direction", query = subject .. " C++ proposal criticism problems " .. var.author },
-    { venue = "committee records", query = stem .. " WG21 EWG C++ minutes poll " .. subject },
+    { venue = "committee records", query = stem_upper .. " WG21 EWG C++ minutes poll " .. subject },
   }
-  -- Each venue gets its own share of the list: with one cap over all of
-  -- them, the first queries filled it and the talks and papers never
-  -- reached the model.
   local SWEEP_PER_VENUE = 5
   local SWEEP_PAPERS_PER_SEARCH = 5
 
-  -- URLs already recorded, and the paper's own, are left out of the list.
   local skip = {}
   for _, e in ipairs(report.evidence) do skip[normalize_url(e.url)] = true end
   for key in pairs(examined) do skip[key] = true end
@@ -1436,14 +1532,10 @@ if ok or exhausted then
       end
     end
   end
-  -- WG21 papers from the paper archive: the author's own papers on the
-  -- subject and those that cite this paper, and papers by others that cite
-  -- it, where answers and critiques live. The paper's own revisions are
-  -- left out: the revision list covers them.
   local paper_sweeps = {
     { venue = "the author's WG21 papers on the subject", query = subject, by_author = true },
-    { venue = "the author's WG21 papers citing this paper", query = stem, by_author = true },
-    { venue = "WG21 papers by others citing this paper", query = stem, by_author = false },
+    { venue = "the author's WG21 papers citing this paper", query = stem_upper, by_author = true },
+    { venue = "WG21 papers by others citing this paper", query = stem_upper, by_author = false },
   }
   for _, ps in ipairs(paper_sweeps) do
     local paper_taken = 0
@@ -1473,10 +1565,6 @@ if ok or exhausted then
       .. " repository, minutes), or a reaction by others that argues about the author's design, with the URL"
       .. " exactly as listed. Skip trackers and pages that only report the paper's status. Reply `done` when"
       .. " the list is covered.")
-    -- A backend fault (502) or a garbled tool name ends the loop with the
-    -- list still usable, and the candidates left unexamined were lost, so
-    -- the pass is resumed up to twice. examine answers a URL it already
-    -- read from its record, so a resumed pass costs nothing twice.
     for attempt = 1, 3 do
       local resumed, loop_err = pcall(models.loop)
       if resumed then
@@ -1494,39 +1582,56 @@ if ok or exhausted then
     end
   end
 end
+```
 
--- Fetch every evidence URL as the whole page (raw: the default article
--- extraction drops blocks like a paper's author header). Ones that do not
--- resolve move to rejected with the fetch failure as the reason. Two more
--- checks run on the page text; a PDF, which fetch does not render, can be
--- checked for neither and is kept.
---
--- The revision item is checked for authorship: papers change hands, and an
--- R0 written by a predecessor is not this author's words. A WG21 paper
--- names its authors in its header, so the author's last name must appear
--- near the top of the page. The allowance is generous because a raw page
--- can open with inline markup before the header.
---
--- Every quote is looked up on its page: a quote taken from a search
--- snippet, stitched, or paraphrased, or a URL that is not the page the
--- item describes (a profile page instead of the post), fails. A page cut
--- off at PAGE_CHARS may hold the quote past the cut, so a quote missing
--- from a truncated page is kept.
---
--- Every kept item is then dated from its sources (derived_year).
+**Verification.**
+
+Every recorded item is checked against its source; the model's word is not
+enough. Each URL is fetched again as the whole page (raw, since article
+extraction drops blocks like a paper's author header), and an item moves to
+`rejected`, with the reason, when:
+
+- its URL does not resolve;
+- it duplicates an item already kept: the same URL, speaker, and quote, or a
+  quote of eight words or more already kept (a mailing-list mirror of a pull
+  request);
+- the author is the speaker but takes no stance (`neutral`) in anything but
+  a prior revision, a committee record, a talk, or an interview;
+- it is a reaction by others on a WG21 paper or committee record that does
+  not name this paper: a mailing's minutes that only list the author among
+  attendees say nothing about the direction;
+- it is another paper's cplusplus/papers tracker issue, recorded as a
+  reaction, whose thread does not name this paper;
+- it is an implementation or repository that the paper does not link and
+  whose page (or, for a GitHub thread, its API text) does not name the paper;
+- it is the prior revision and its header, within `REVISION_HEADER_CHARS` of
+  the top, does not name the author: papers change hands, and an R0 written
+  by a predecessor is not this author's words (the allowance is generous
+  because a raw page can open with inline markup before the header);
+- its quote is not on the page or its article text: a quote taken from a
+  search snippet, stitched, or paraphrased, or a URL that is not the page the
+  item describes, fails. A page cut off at `PAGE_CHARS` may hold the quote
+  past the cut, so a quote missing from a truncated page is kept, and a PDF,
+  which fetch does not render, is kept unchecked.
+
+Every kept item is then dated and cited (`date_and_cite`), and a quote from a
+WG21 paper's own text (a prior paper, companion paper, prior revision, or a
+critique paper, as opposed to minutes that quote one speaker) is credited to
+every author its header lists, since readers credited co-authored papers to
+the author alone. Each kept item's id is the number the position cites it
+by, `[1]`, `[2]`. `kept` is a section global for the blocks after this one.
+
+```lua
 local REVISION_HEADER_CHARS = 20000
 
--- A committee record by others (minutes, polls) read from the paper
--- archive must name this paper: a mailing's minutes that only list the
--- author among attendees say nothing about the direction.
 local COMMITTEE_KINDS = {
   minutes = true, poll = true, vote = true, ["committee discussion"] = true, ["reflector thread"] = true,
 }
+local PAPER_WORD_KINDS = {
+  ["prior paper"] = true, ["companion paper"] = true, ["prior revision"] = true, criticism = true,
+}
 local stem_digits = stem_lower:match("(%d+)$") or stem_lower
 
--- One page or one passage is one item: a second item with the same URL,
--- speaker, and quote, or with a quote already kept (a mailing-list mirror
--- of a pull request), is a duplicate.
 local seen_items, seen_quotes = {}, {}
 local function duplicate_of(e)
   local q = e.quote and comparable(e.quote) or ""
@@ -1538,7 +1643,6 @@ local function duplicate_of(e)
   return false
 end
 
--- A cplusplus/papers issue other than this paper's own tracker.
 local function tracker_of_other_paper(url)
   local host, seg = url_parts(url)
   if host ~= "github.com" or (seg[1] or ""):lower() ~= "cplusplus" or (seg[2] or ""):lower() ~= "papers"
@@ -1548,8 +1652,6 @@ local function tracker_of_other_paper(url)
   return not tracker_url or normalize_url(url):gsub("#.*$", "") ~= normalize_url(tracker_url)
 end
 
--- Whether the source at url names this paper by number: its URL, its
--- page, or, for a GitHub thread whose page is script, its API text.
 local function names_paper(url, page)
   if url:lower():find(stem_digits, 1, true) or (page and page:lower():find(stem_digits, 1, true)) then
     return true
@@ -1558,20 +1660,21 @@ local function names_paper(url, page)
   return thread ~= nil and thread:lower():find(stem_digits, 1, true) ~= nil
 end
 
--- Whether url is in a repository the paper links (paper_repos).
 local function linked_repo(url)
   local host, seg = url_parts(url)
   if not host or not seg[2] then return false end
   return paper_repos[(host .. "/" .. seg[1] .. "/" .. seg[2]:gsub("%.git$", "")):lower()] == true
 end
 
--- Kinds whose quote is the paper's own text, as opposed to minutes that
--- quote one speaker.
-PAPER_WORD_KINDS = {
-  ["prior paper"] = true, ["companion paper"] = true, ["prior revision"] = true, criticism = true,
-}
+local function header_names_author(text)
+  return text ~= nil and names_author(text:sub(1, REVISION_HEADER_CHARS))
+end
 
-local kept = {}
+local function truncated(text)
+  return text ~= nil and text:match("\ntruncated: true\n") ~= nil
+end
+
+kept = {}
 for _, e in ipairs(report.evidence) do
   local prior = e.kind == "prior revision"
   local ok, reason = url_resolves(e.url, PAGE_CHARS, true)
@@ -1580,12 +1683,6 @@ for _, e in ipairs(report.evidence) do
   end
   local page = ok and reason or nil
   local article = page and article_text(e.url) or nil
-  local function header_names_author(text)
-    return text ~= nil and names_author(text:sub(1, REVISION_HEADER_CHARS))
-  end
-  local function truncated(text)
-    return text ~= nil and text:match("\ntruncated: true\n") ~= nil
-  end
   if ok and e.speaker == "author" and e.stance == "neutral" and not prior and not COMMITTEE_KINDS[e.kind]
     and e.kind ~= "talk" and e.kind ~= "interview" then
     ok, reason = false, "an item in which the author takes no stance on this direction says nothing about their position"
@@ -1619,15 +1716,11 @@ for _, e in ipairs(report.evidence) do
     if quote then
       e.quote, e.quote_by = quote, quote_by
     end
-    -- A paper's words belong to every author its header lists; readers
-    -- credited co-authored papers to the author alone.
     local header_authors = page and PAPER_WORD_KINDS[e.kind] and paper_url_id(e.url)
       and page:match("\nAuthors: ([^\n]+)")
     if header_authors and e.quote and not is_locator(e.quote) then
       e.quote_by = header_authors
     end
-  end
-  if ok then
     kept[#kept + 1] = e
   else
     report.rejected[#report.rejected + 1] = {
@@ -1635,35 +1728,80 @@ for _, e in ipairs(report.evidence) do
     }
   end
 end
--- Each kept item's id is the number the position cites it by, [1], [2].
 for i, e in ipairs(kept) do e.id = i end
 report.evidence = kept
 log(#kept .. " evidence URLs resolved, " .. #report.rejected .. " rejected")
+```
 
--- Whether the thread needs a context comment: a documented position is a
--- verified item in which the author personally takes a stance, outside
--- this paper's own revisions (the author supporting their own paper is
--- circular). Decided here from the evidence, not by the model, so the
--- position text is written to agree with it.
+**Whether a position was found.**
+
+`position_found` decides whether the thread needs a context comment. A
+documented position is a verified item in which the author personally takes
+a stance, outside this paper's own revisions (the author supporting their
+own paper is circular). It is decided here from the evidence, not by the
+model, so the position text is written to agree with it.
+
+```lua
 for _, e in ipairs(kept) do
   if e.speaker == "author" and e.kind ~= "prior revision" and e.stance ~= "neutral" then
     report.position_found = true
     break
   end
 end
+```
 
--- Second round: the position, written against the verified list only.
--- This is one stateless models.infer call with no tool history: a fresh
--- prompt holding the paper, the author, and every verified item with its
--- note and quote. The scan's message list is not reused, because a list
--- holding replayed tool calls can fail at the provider and take the
--- position down with it, and because a text reply is what infer returns.
+**The position.**
+
+The position is written against the verified list only, in one stateless
+`models.infer` call with no tool history: a fresh prompt holding the paper,
+the author, and every verified item with its stance, note, and quote (or its
+record locator). The scan's message list is not reused, because a list
+holding replayed tool calls can fail at the provider and take the position
+down with it, and because a text reply is what `infer` returns. The prompt's
+last sentence follows `position_found`.
+
+The position is the model's text reply, not a tool call: `models.loop`
+returns as soon as the model answers in text, and asked for a tool call the
+model answered in text often enough that the report went out with no
+position at all. `parse_position` returns the position text, or nil and the
+reason the reply does not fit: it must be non-empty, cite only items that
+exist, and cite at least one when there are any. A rejected reply is asked
+for once more, with the reason.
+
+Then a check pass: the draft misread polls, credited co-authored work to the
+author alone, and stretched items past what they show, so a second call
+checks each sentence against the items it cites and returns the corrected
+text. It is told which author items were written with co-authors (a
+`quote_by` naming several people). The draft stands when the check's reply
+does not parse.
+
+```lua
+function parse_position(text, evidence_count)
+  local body = trim(text)
+  if body == "" then
+    return nil, "the reply is empty; it must be the position text"
+  end
+  local cited, bad = false, {}
+  for num in body:gmatch("%[(%d+)%]") do
+    local i = tonumber(num)
+    if i >= 1 and i <= evidence_count then cited = true else bad[#bad + 1] = num end
+  end
+  if #bad > 0 then
+    return nil, "the position cites evidence " .. table.concat(bad, ", ")
+      .. " but only items 1 to " .. evidence_count .. " exist; cite only the verified list"
+  end
+  if evidence_count > 0 and not cited then
+    return nil, "the position cites no evidence; end each factual sentence with the item numbers it rests on, like [1]"
+  end
+  return body
+end
+
 local listing = {}
 for i, e in ipairs(kept) do
-  listing[#listing + 1] = string.format("[%d] %s, speaker %s: %s (%s, %s)%s\n    note: %s%s",
+  listing[#listing + 1] = string.format("[%d] %s, speaker %s: %s (%s, %s)\n    stance: %s\n    note: %s%s",
     i, e.kind, e.speaker == "author" and var.author or "someone other than the author",
     e.title, e.url, e.year ~= "" and e.year or "year unknown",
-    "\n    stance: " .. e.stance,
+    e.stance,
     e.note,
     is_locator(e.quote) and ("\n    record: " .. e.quote)
       or ("\n    quote by " .. e.quote_by .. ": " .. e.quote))
@@ -1705,6 +1843,7 @@ local ask = "You are the author advocacy scan for WG21 paper " .. var.document_i
         .. " position by the author was found outside this paper's own revisions, then describe only what the listed"
         .. " items show.")
       or " No evidence is listed, so say that no documented position was found."))
+
 local prompt_text = ask
 for attempt = 1, 2 do
   local ok2, reply = pcall(models.infer, prompt_text)
@@ -1723,11 +1862,6 @@ for attempt = 1, 2 do
     .. ". Reply again in exactly the shape asked for, nothing else."
 end
 
--- A check pass: the draft position misread polls, credited co-authored
--- work to the author alone, and stretched items past what they show, so a
--- second call checks each sentence against the items it cites and
--- returns the corrected text. The draft stands when the check's reply
--- does not parse.
 if report.position ~= "" and #kept > 0 then
   local coauthored = {}
   for i, e in ipairs(kept) do
@@ -1757,10 +1891,18 @@ if report.position ~= "" and #kept > 0 then
     note("position check failed: " .. tostring(reply3))
   end
 end
+```
 
--- Last resort when the model gave no usable position: the position is
--- built from the verified evidence itself, so the report always states
--- what was found.
+**The report.**
+
+When the model gave no usable position, the position is built from the
+verified evidence itself, so the report always states what was found: a
+statement that nothing survived verification (with the research pass's
+failure, when it ended early), or the items' notes one by one. The report is
+then encoded and written to the store as `author_advocacy.json` and returned
+as the run result.
+
+```lua
 if report.position == "" then
   if #kept == 0 then
     report.position = "No documented public position by " .. var.author
@@ -1781,8 +1923,6 @@ end
 if #report.evidence == 0 then report.evidence = nil end
 if #report.rejected == 0 then report.rejected = nil end
 
--- An empty Lua table encodes as {} rather than [], which is why evidence
--- and rejected are deleted above when empty instead of emitted.
 local report_json = json.encode(report)
 store.write("author_advocacy.json", report_json)
 return report_json
@@ -1790,16 +1930,38 @@ return report_json
 
 ### Read page
 
+`examine` in `## Scan` calls this section once per page. The call input is a
+JSON job: `text`, the reader's whole message; `url`, the page as the research
+pass named it; `key` and `final`, the normalized URL and the URL after
+redirects; `base`, the number of items already in the report;
+`revision_item`, the index of the prior-revision item when there is one;
+and `limit`, the most items this page may give when it is the paper's
+tracker issue. The section returns JSON: `items`, the evidence recorded
+here, and `reply`, the reader's one-line answer.
+
+The block below holds the closed sets the reader's items are checked
+against:
+
+- `STANCES`, the four stances.
+- `KIND_NAMES`, the kinds an item may have, in the order the tool lists
+  them. The set is closed: an open one let readers record profile, index,
+  and documentation pages under kinds of their own.
+- `PAGE_ITEM_LIMIT`, the most items one page may give: a statement and a
+  reply to it, or two separate statements by the author. One reader per page
+  used to record every passage it saw, up to four items from one archive
+  page.
+- `ACT_KINDS`, the kinds that can record an act with no words of its own (a
+  commit, a merge, a vote, a poll) and so may be recorded without a quote.
+  Every other source is somebody's words and must be quoted.
+- `OTHER_KINDS`, the kinds an item whose speaker is not the author may have:
+  someone else's words are evidence only as a reaction to the author's
+  direction.
+
+`id_lower` and `stem_lower` identify the paper under scan, as in `## Scan`.
+
 ```lua
 require "## lib"
 
--- Called by examine in `## Scan` with one page. The call input is a JSON
--- job: text, the reader's whole message; url, the page as the research
--- pass named it; key and final, the normalized URL and the URL after
--- redirects; base, the number of items already in the report; and
--- revision_item, the index of the prior-revision item when there is one.
--- Returns JSON: items, the evidence recorded here, and reply, the reader's
--- one-line answer.
 job = json.decode(args)
 items = {}
 revision_item = job.revision_item
@@ -1808,27 +1970,18 @@ STANCES = {
   same_direction = true, opposing_direction = true, competing_design = true, neutral = true,
 }
 
--- The kinds an item may have. A closed set: an open one let readers record
--- profile, index, and documentation pages under kinds of their own.
-KINDS = {}
-for _, k in ipairs({
+KIND_NAMES = {
   "prior paper", "companion paper", "talk", "blog post", "interview", "minutes",
   "committee discussion", "reflector thread", "community discussion", "criticism",
   "implementation", "competing library", "repository", "commit", "merge", "pull request",
   "vote", "poll",
-}) do KINDS[k] = true end
-KIND_LIST = "prior paper, companion paper, talk, blog post, interview, minutes, committee discussion,"
-  .. " reflector thread, community discussion, criticism, implementation, competing library, repository,"
-  .. " commit, merge, pull request, vote, poll"
+}
+KINDS = {}
+for _, k in ipairs(KIND_NAMES) do KINDS[k] = true end
+KIND_LIST = table.concat(KIND_NAMES, ", ")
 
--- The most items one page may give: a statement and a reply to it, or two
--- separate statements by the author. One reader per page recorded every
--- passage it saw, up to four items from one archive page.
 PAGE_ITEM_LIMIT = 2
 
--- The kinds that can record an act with no words of its own (a commit, a
--- merge, a vote, a poll), and so may be recorded without a quote. Every
--- other source is somebody's words and must be quoted.
 ACT_KINDS = {
   implementation = true, commit = true, merge = true, vote = true, poll = true, minutes = true,
   repository = true, ["pull request"] = true, ["committee discussion"] = true,
@@ -1840,9 +1993,55 @@ OTHER_KINDS = {
   minutes = true, ["reflector thread"] = true, poll = true, vote = true,
 }
 
--- Readers recorded items whose note or title only said the page held
--- nothing ("placeholder", "x", "Nothing", "not recording"). An item that
--- short or that empty is refused.
+id_lower = var.document_id:lower()
+stem_lower = id_lower:match("^(%a+%d+)") or id_lower
+```
+
+`record_evidence` checks every item before it enters the report and answers
+a rejected one with the reason, so the reader can correct it:
+
+- The URL must be the page this reader has in view (as named or after
+  redirects): every quote is checked against the page at its URL after the
+  scan. To use a page it links to, the reader names that URL in its reply so
+  the research pass can examine it.
+- The paper under scan is never evidence ("the author of P2826R4 supports
+  P2826R4" is circular), and a later revision is outside the scan. Both are
+  detected from the URL, not the title: a paper URL whose last segment is
+  the document id is the paper, while a thread or minutes with the document
+  number in its title is discussion of the paper and is admitted. An
+  earlier revision becomes the one `prior revision` item, with speaker
+  author and stance same_direction (the author's own earlier revision argues
+  the paper's direction). `revision_of` gives the revision number of another
+  revision of this paper (`p2826r0` through `p2826r9` when scanning
+  P2826R4); the paper itself and its family link are rejected before it
+  runs.
+- Kinds are prose, not identifiers: `committee_discussion` becomes
+  `committee discussion`.
+- A page gives at most its item limit.
+- Someone else's words are evidence only as a reaction, with one of the
+  `OTHER_KINDS`: a co-author's talk, a rival library's page, or a paper the
+  author did not write says nothing about the author's own position.
+- Only one prior-revision item per scan; the slot is claimed only once every
+  check has passed, so a rejected attempt leaves it open for the corrected
+  one.
+- A title or note that only says the page held nothing ("placeholder", "x",
+  "Nothing", "not recording") is refused: readers recorded such items.
+- A quote is verbatim text or empty, never a locator; an empty quote is
+  allowed only for an act or a PDF (fetch cannot render a PDF, so there is
+  no page text to copy from). Passages joined with an ellipsis were stitched
+  from several places (or several revisions) and cannot be checked against
+  the URL.
+- Every quote names who wrote it, and an author item's quote must be the
+  author's: the report attributes each quote to the item's speaker.
+
+```lua
+local current_revision = tonumber(id_lower:match("r(%d+)$") or "")
+
+local function revision_of(url_id)
+  if url_id == nil or url_id:sub(1, #stem_lower) ~= stem_lower then return nil end
+  return tonumber(url_id:sub(#stem_lower + 1):match("^r(%d+)$") or "")
+end
+
 local PLACEHOLDER_WORDS = { "placeholder", "nothing recorded", "not recording", "intentionally not",
   "nothing qualifies", "does not qualify", "nothing to record" }
 local function placeholder_reason(title, note)
@@ -1855,28 +2054,6 @@ local function placeholder_reason(title, note)
     end
   end
   return nil
-end
-
--- The paper under scan is never evidence ("the author of P2826R4 supports
--- P2826R4" is circular). Earlier revisions of it are evidence only for
--- what changed, and only one item is taken for all of them. Both are
--- detected from the URL, not the title: a paper URL (see paper_url_id)
--- whose last segment is the document id is the paper; a thread or minutes
--- with the document number in the title is discussion of the paper and
--- is admitted.
-
-id_lower = var.document_id:lower()
-stem_lower = id_lower:match("^(%a+%d+)") or id_lower
-
--- The revision number of the paper under scan: 4 for P2826R4.
-local current_revision = tonumber(id_lower:match("r(%d+)$") or "")
-
--- The revision number of url_id when it is another revision of this
--- paper (p2826r0 through p2826r9 when scanning P2826R4), else nil.
--- p2826r4 and p2826 are rejected before this runs.
-local function revision_of(url_id)
-  if url_id == nil or url_id:sub(1, #stem_lower) ~= stem_lower then return nil end
-  return tonumber(url_id:sub(#stem_lower + 1):match("^r(%d+)$") or "")
 end
 
 tools.offer(tools.adhoc({
@@ -1894,12 +2071,10 @@ tools.offer(tools.adhoc({
     quote_by = { "string", "Who wrote or said the quoted passage, as the page shows it: a name, with a handle if the page uses one, e.g. \"Jane Doe (jdoe)\". For a paper or post with several authors, every author the page names, e.g. \"Jane Doe, John Roe\": the words are all of theirs, never one author's alone. Empty string when quote is empty. With speaker author it must name " .. var.author .. "." },
   },
 }, function(a)
-  local url = tostring(a.url or ""):match("^%s*(.-)%s*$")
+  local url = trim(tostring(a.url or ""))
   if not url:match("^https?://[^/]+") then
     return "rejected: url is required and must be the URL of the page you are reading, " .. job.url
   end
-  -- Every quote is checked against the page at url after the scan, so an
-  -- item may cite only the page this reader has in view.
   if normalize_url(url) ~= job.key and normalize_url(url) ~= job.final then
     return "rejected: record only the page you are reading, " .. job.url
       .. "; to use a page it links to, name that URL in your reply so the research pass can examine it"
@@ -1909,9 +2084,7 @@ tools.offer(tools.adhoc({
     return "rejected: " .. var.document_id .. " is the paper under scan and its recommendation is already recorded; "
       .. "only sources outside this revision count"
   end
-  -- Kinds are prose, not identifiers: committee_discussion becomes
-  -- committee discussion.
-  local kind = tostring(a.kind or ""):lower():gsub("_", " "):match("^%s*(.-)%s*$")
+  local kind = trim((tostring(a.kind or ""):lower():gsub("_", " ")))
   local revision = revision_of(url_id)
   if revision and current_revision and revision > current_revision then
     return "rejected: " .. url_id:upper() .. " is a later revision of " .. var.document_id
@@ -1928,24 +2101,18 @@ tools.offer(tools.adhoc({
     return "rejected: one page gives at most " .. page_limit .. " items, and this page already has "
       .. #items .. "; keep the strongest and reply"
   end
-  local speaker = prior and "author" or tostring(a.speaker or ""):lower():match("^%s*(.-)%s*$")
+  local speaker = prior and "author" or trim(tostring(a.speaker or ""):lower())
   if speaker ~= "author" and speaker ~= "other" then
     return "rejected: speaker must be author (" .. var.author .. " personally wrote, said, or did it) or other; got "
       .. string.format("%q", speaker)
   end
-  -- Someone else's words are evidence only as a reaction to the author's
-  -- direction: criticism, a discussion thread, or committee members and
-  -- polls deciding against or for the author. A co-author's talk, a rival
-  -- library's page, or a paper the author did not write says nothing
-  -- about the author's own position.
   if speaker == "other" and not OTHER_KINDS[kind] then
     return "rejected: a source whose speaker is not " .. var.author .. " is evidence only as a reaction to the author's"
       .. " direction, recorded with kind criticism, community discussion, or committee discussion; got kind "
       .. string.format("%q", kind) .. ". A co-author's, colleague's, or rival project's own material is not"
       .. " evidence of the author's position"
   end
-  -- An author's own earlier revision argues the paper's direction.
-  local stance = prior and "same_direction" or tostring(a.stance or ""):lower():match("^%s*(.-)%s*$")
+  local stance = prior and "same_direction" or trim(tostring(a.stance or ""):lower())
   if not STANCES[stance] then
     return "rejected: stance must be one of same_direction, opposing_direction, competing_design, neutral; got "
       .. string.format("%q", stance)
@@ -1954,21 +2121,16 @@ tools.offer(tools.adhoc({
     return "rejected: the revision arc is already evidence #" .. revision_item
       .. "; one item per scan covers every earlier revision, so read the whole history first and record it once"
   end
-  local title = decode_entities(tostring(a.title or "")):match("^%s*(.-)%s*$")
-  local item_note = decode_entities(tostring(a.note or "")):match("^%s*(.-)%s*$")
+  local title = trim(decode_entities(tostring(a.title or "")))
+  local item_note = trim(decode_entities(tostring(a.note or "")))
   local empty = placeholder_reason(title, item_note)
   if empty then
     return "rejected: " .. empty .. "; when nothing on the page qualifies, record nothing and reply"
   end
-  local quote = decode_entities(tostring(a.quote or "")):match("^%s*(.-)%s*$")
+  local quote = trim(decode_entities(tostring(a.quote or "")))
   if is_locator(quote) then
     return "rejected: quote is verbatim text from the page or empty; for an act with no words of its own, leave quote empty and the scan cites the record"
   end
-  -- A quote is one passage from one page. Passages joined with an
-  -- ellipsis were stitched from several places (or several revisions)
-  -- and cannot be checked against the URL.
-  -- A PDF is exempt: fetch cannot render it, so there is no page text to
-  -- copy from.
   if quote == "" and not ACT_KINDS[kind] and not url:lower():gsub("[#?].*$", ""):match("%.pdf$") then
     return "rejected: quote is required: a " .. kind .. " is somebody's words; copy the one passage from the page"
       .. " that shows the position. Leave quote empty only for an act with no words of its own, with kind"
@@ -1977,9 +2139,7 @@ tools.offer(tools.adhoc({
   if quote:match("%.%.%.") or quote:match("…") then
     return "rejected: quote must be one contiguous passage from the page at url; do not join passages with an ellipsis, pick the single most telling one"
   end
-  -- Every quote names who wrote it, and an author item's quote must be the
-  -- author's: the report attributes each quote to the item's speaker.
-  local quote_by = tostring(a.quote_by or ""):match("^%s*(.-)%s*$")
+  local quote_by = trim(tostring(a.quote_by or ""))
   if quote ~= "" and quote_by == "" then
     return "rejected: quote_by is required with a quote; name who wrote or said the quoted passage, as the page shows it"
   end
@@ -1989,8 +2149,6 @@ tools.offer(tools.adhoc({
       .. " wrote or said; for an act such as a merge or a commit, record the item with an empty quote and"
       .. " describe the act in the note"
   end
-  -- Claimed only once every check has passed, so a rejected attempt at
-  -- the revision item leaves the slot open for the corrected one.
   if prior then revision_item = job.base + #items + 1 end
   items[#items + 1] = {
     kind = kind,
@@ -2005,7 +2163,13 @@ tools.offer(tools.adhoc({
   }
   return "recorded evidence #" .. job.base + #items .. " (" .. kind .. ")"
 end))
+```
 
+The reader's conversation is the job's message alone. A failed loop still
+returns what was recorded, with the failure as the reply. An empty item list
+is sent as `json.array()` so it encodes as `[]`.
+
+```lua
 messages:user(job.text)
 local done, err = pcall(models.loop)
 local reply = done and tostring((messages[#messages] or {}).content or "")
@@ -2015,41 +2179,74 @@ return json.encode({ items = #items > 0 and items or json.array(), reply = reply
 
 ## lib
 
-```lua
--- Every section requires this library first, so the selection below (and
--- its temperature) applies to every model round in every section entry,
--- the page readers' included. It sits after `## Scan`, whose return ends
--- the walk, so the walk never runs it as a section.
-models.use("default", { temperature = 1.0 })
+The shared library every section requires first. It sits after `## Scan`,
+whose return ends the walk, so the walk never runs it as a section.
 
--- Cuts s to at most n bytes without splitting a UTF-8 character; a
--- partial trailing sequence is invalid UTF-8, which untrusted() refuses.
+The model selection comes first, so it (and its temperature) applies to every
+model round in every section entry, the page readers' included.
+
+```lua
+models.use("default", { temperature = 1.0 })
+```
+
+Text helpers:
+
+- `clip(s, n)` cuts `s` to at most `n` bytes without splitting a UTF-8
+  character; a partial trailing sequence is invalid UTF-8, which
+  `untrusted()` refuses.
+- `note(msg)` logs safely: `log()` refuses messages over 256 characters or
+  holding a newline or other control character, and a refused log ends the
+  run, so control characters become spaces and long messages are clipped.
+- `trim(s)` drops leading and trailing whitespace.
+- `decode_entities(s)` replaces the HTML character references that search
+  snippets and some pages carry with the characters they stand for; a quote
+  stores the characters.
+
+```lua
 function clip(s, n)
   if #s <= n then return s end
   s = s:sub(1, n)
   return (s:gsub("[\192-\255][\128-\191]*$", ""))
 end
 
--- log() refuses messages over 256 characters or holding a newline or
--- other control character, and a refused log ends the run.
 function note(msg)
   msg = tostring(msg):gsub("%c", " ")
   if #msg > 250 then msg = clip(msg, 247) .. "..." end
   log(msg)
 end
 
--- The model never sees the whole paper: the largest papers run far past
--- any context window. It sees (1) an outline of every heading with its
--- line number, so it knows the shape of the entire document, (2) the head
--- of the paper, where the title, abstract, and introduction live, and (3)
--- a read_lines tool for any range it wants to inspect. The head cut lands
--- on a line boundary.
+function trim(s)
+  return s:match("^%s*(.-)%s*$")
+end
+
+function decode_entities(s)
+  s = s:gsub("&#[xX]27;", "'"):gsub("&#39;", "'"):gsub("&quot;", '"'):gsub("&lt;", "<")
+    :gsub("&gt;", ">"):gsub("&nbsp;", " "):gsub("&amp;", "&")
+  return s
+end
+```
+
+Reading the paper. The model never sees the whole paper: the largest papers
+run far past any context window. It sees an outline of every heading with
+its line number, so it knows the shape of the entire document; the head of
+the paper, where the title, abstract, and introduction live; and a
+`read_lines` tool for any range it wants to inspect.
+
+- `paper_head` cuts the paper to `PAPER_HEAD_CHARS`, on a line boundary.
+- `split_lines` splits text into a 1-based array of lines.
+- `paper_outline` renders `line N: ## Heading` for every Markdown heading up
+  to `OUTLINE_MAX_DEPTH`, skipping lines inside code fences, and stops after
+  `OUTLINE_MAX_ENTRIES` (huge wording papers can have thousands of
+  headings). It returns the outline text and the number of headings found
+  before the cap.
+- `read_lines_tool` builds (but does not offer) a `read_lines` tool over a
+  1-based array of the paper's lines, returning at most `READ_LINES_MAX`
+  lines per call.
+
+```lua
 PAPER_HEAD_CHARS = 48000
--- Headings deeper than this are left out of the outline.
 OUTLINE_MAX_DEPTH = 3
--- The outline stops here; huge wording papers can have thousands of headings.
 OUTLINE_MAX_ENTRIES = 250
--- read_lines returns at most this many lines per call.
 READ_LINES_MAX = 200
 
 function paper_head(paper)
@@ -2061,7 +2258,6 @@ function paper_head(paper)
   return cut or head
 end
 
--- Splits text into a 1-based array of lines.
 function split_lines(text)
   local lines = {}
   for line in (text .. "\n"):gmatch("(.-)\n") do
@@ -2070,9 +2266,6 @@ function split_lines(text)
   return lines
 end
 
--- Renders `line N: ## Heading` for every Markdown heading up to
--- OUTLINE_MAX_DEPTH, skipping lines inside code fences. Returns the outline
--- text and the number of headings found (before the entry cap).
 function paper_outline(lines)
   local out, count, in_fence = {}, 0, false
   for n, line in ipairs(lines) do
@@ -2094,8 +2287,6 @@ function paper_outline(lines)
   return table.concat(out, "\n"), count
 end
 
--- A read_lines tool over lines, a 1-based array of the paper's lines.
--- Returns the Tool object, not yet offered.
 function read_lines_tool(lines, description)
   return tools.adhoc({
     name = "read_lines",
@@ -2120,11 +2311,26 @@ function read_lines_tool(lines, description)
     return untrusted(table.concat(out, "\n"))
   end)
 end
+```
 
--- The document id in a paper URL's last path segment: p2826r4, or p2826 for
--- the wg21.link family link that resolves to the latest revision. Nil for
--- any URL not on open-std.org, wg21.link, or isocpp.org's paper store
--- (isocpp.org/files/papers/, where drafts are posted before a mailing).
+URLs, authors, and quotes:
+
+- `paper_url_id` is the document id in a paper URL's last path segment:
+  `p2826r4`, or `p2826` for the wg21.link family link that resolves to the
+  latest revision. Nil for any URL not on open-std.org, wg21.link, or
+  isocpp.org's paper store (`isocpp.org/files/papers/`, where drafts are
+  posted before a mailing).
+- `names_author` is true when text names the author: their last name as a
+  whole word, so a short name like Li does not match inside "list". The word
+  frontiers only apply at an ASCII letter or digit (`%w` does not match the
+  bytes of a non-ASCII letter), so a name that starts or ends with one gets
+  no frontier on that side.
+- `is_locator` is true when a quote is a locator: a `[bracketed]` citation of
+  a record with no text, written by the scan, not words anyone wrote.
+- `normalize_url` drops a URL's fragment and trailing slashes and lowercases
+  its scheme and host, so one page is one key however it is spelled.
+
+```lua
 function paper_url_id(url)
   local u = url:lower():gsub("[#?].*$", ""):gsub("/+$", "")
   local host = u:match("^%a+://([^/:]+)") or ""
@@ -2136,11 +2342,6 @@ function paper_url_id(url)
   return last:match("^(%a%d+r?%d*)$")
 end
 
--- True when text names the author: their last name as a whole word, so a
--- short name like Li does not match inside "list".
--- The frontiers only apply at an ASCII letter or digit: %w does not
--- match the bytes of a non-ASCII letter, so a name that starts or ends
--- with one gets no frontier on that side.
 function names_author(text)
   local last = (var.author:match("(%S+)$") or var.author):lower()
   local pattern = (last:match("^%w") and "%f[%w]" or "")
@@ -2149,22 +2350,10 @@ function names_author(text)
   return tostring(text or ""):lower():find(pattern) ~= nil
 end
 
--- Search snippets and some pages carry HTML character references; a
--- quote stores the characters they stand for.
-function decode_entities(s)
-  s = s:gsub("&#[xX]27;", "'"):gsub("&#39;", "'"):gsub("&quot;", '"'):gsub("&lt;", "<")
-    :gsub("&gt;", ">"):gsub("&nbsp;", " "):gsub("&amp;", "&")
-  return s
-end
-
--- True when quote is a locator: a [bracketed] citation of a record with
--- no text, written by the scan, not words anyone wrote.
 function is_locator(quote)
   return quote ~= nil and quote:match("^%[.*%]$") ~= nil
 end
 
--- A URL with its fragment and trailing slashes dropped and its scheme and
--- host lowercased, so one page is one key however it is spelled.
 function normalize_url(url)
   local u = tostring(url):gsub("#.*$", "")
   local scheme, host, rest = u:match("^(%a+)://([^/]+)(.*)$")

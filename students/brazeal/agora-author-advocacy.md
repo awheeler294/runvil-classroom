@@ -53,7 +53,7 @@ text: a plain find on the full name, falling back to the last name so that
 "E. Niebler" or "Niebler, Eric" still count.
 
 ```lua
-require "## lib"
+require "/lib"
 
 if not argv then
   local id, name = args:match("^%s*(%S+)%s+(.-)%s*$")
@@ -94,7 +94,7 @@ section globals `title` and `recommendation`, which the block after the
 instructions copies into `var` for `## Scan`.
 
 ```lua
-require "## lib"
+require "/lib"
 
 title, recommendation = "", ""
 
@@ -194,7 +194,7 @@ changed and what they held to. `revision_item` is the index of the one
 prior-revision item once a reader records it.
 
 ```lua
-require "## lib"
+require "/lib"
 
 report = {
   document_id = var.document_id,
@@ -1046,7 +1046,7 @@ local function read_page(url, key, final, text)
     base = #report.evidence, revision_item = revision_item,
     limit = (tracker_url and key == normalize_url(tracker_url)) and TRACKER_ITEM_LIMIT or nil,
   })
-  local called, out = pcall(call, "### Read page", job)
+  local called, out = pcall(call, "Read page", job)
   if not called then return "reader ended early: " .. tostring(out) end
   local decoded, result = pcall(json.decode, out)
   if not decoded or type(result) ~= "table" then
@@ -1960,7 +1960,7 @@ against:
 `id_lower` and `stem_lower` identify the paper under scan, as in `## Scan`.
 
 ```lua
-require "## lib"
+require "/lib"
 
 job = json.decode(args)
 items = {}

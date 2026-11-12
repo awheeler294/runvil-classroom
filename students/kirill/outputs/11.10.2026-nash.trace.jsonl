@@ -1,0 +1,14 @@
+{"effect":null,"kind":"event","payload":{"kind":"run_started","provenance":{"seq":0,"task":"0"},"section":"The Nash Equilibrium"},"seq":0,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"section_started","provenance":{"seq":1,"task":"0"},"section":"File"},"seq":1,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_started","provenance":{"seq":2,"task":"0"},"section":"File"},"seq":2,"task":"0"}
+{"effect":0,"kind":"effect","payload":{"Vfs":{"op":{"Exists":{"path":"game.md"}}}},"seq":3,"task":"0"}
+{"effect":0,"kind":"answer","payload":{"Vfs":{"Ok":{"Bool":false}}},"seq":3,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"vfs_exists_succeeded","provenance":{"seq":4,"task":"0"},"section":"File"},"seq":4,"task":"0"}
+{"effect":1,"kind":"effect","payload":{"Vfs":{"op":{"Write":{"contents":"# Untitled Game\n\n## Players\n\n## Games\n\n\\newpage\n\n## Payoff Analysis\n\n| Game | Equilibrium | Welfare | Pareto-optimal | Gap | Status |\n| ---- | ----------- | ------- | -------------- | --- | ------ |\n","path":"game.md"}}}},"seq":5,"task":"0"}
+{"effect":1,"kind":"answer","payload":{"Vfs":{"Ok":"Unit"}},"seq":5,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"vfs_write_succeeded","provenance":{"seq":6,"task":"0"},"section":"File"},"seq":6,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_succeeded","provenance":{"seq":7,"task":"0"},"section":"File"},"seq":7,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_started","provenance":{"seq":8,"task":"0"},"section":"File"},"seq":8,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_succeeded","provenance":{"seq":9,"task":"0"},"section":"File"},"seq":9,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"section_finished","provenance":{"seq":10,"task":"0"},"section":"File"},"seq":10,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"run_succeeded","provenance":{"seq":11,"task":"0"},"section":"The Nash Equilibrium"},"seq":11,"task":"0"}

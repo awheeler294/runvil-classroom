@@ -1,0 +1,25 @@
+{"effect":null,"kind":"event","payload":{"kind":"run_started","provenance":{"seq":0,"task":"0"},"section":"The Nash Equilibrium"},"seq":0,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_started","provenance":{"seq":1,"task":"0"},"section":"The Nash Equilibrium"},"seq":1,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_succeeded","provenance":{"seq":2,"task":"0"},"section":"The Nash Equilibrium"},"seq":2,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"section_started","provenance":{"seq":3,"task":"0"},"section":"Tools"},"seq":3,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_started","provenance":{"seq":4,"task":"0"},"section":"Tools"},"seq":4,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_succeeded","provenance":{"seq":5,"task":"0"},"section":"Tools"},"seq":5,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_started","provenance":{"seq":6,"task":"0"},"section":"Tools"},"seq":6,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_succeeded","provenance":{"seq":7,"task":"0"},"section":"Tools"},"seq":7,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"section_finished","provenance":{"seq":8,"task":"0"},"section":"Tools"},"seq":8,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"section_started","provenance":{"seq":9,"task":"0"},"section":"Test"},"seq":9,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_started","provenance":{"seq":10,"task":"0"},"section":"Test"},"seq":10,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_library_load_started","library":"## Tools","provenance":{"seq":11,"task":"0"},"section":"Test"},"seq":11,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_library_load_succeeded","library":"## Tools","provenance":{"seq":12,"task":"0"},"section":"Test"},"seq":12,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_succeeded","provenance":{"seq":13,"task":"0"},"section":"Test"},"seq":13,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_started","provenance":{"seq":14,"task":"0"},"section":"Test"},"seq":14,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_succeeded","provenance":{"seq":15,"task":"0"},"section":"Test"},"seq":15,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"section_finished","provenance":{"seq":16,"task":"0"},"section":"Test"},"seq":16,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"section_started","provenance":{"seq":17,"task":"0"},"section":"Init"},"seq":17,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_started","provenance":{"seq":18,"task":"0"},"section":"Init"},"seq":18,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_library_load_started","library":"## Tools","provenance":{"seq":19,"task":"0"},"section":"Init"},"seq":19,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_library_load_succeeded","library":"## Tools","provenance":{"seq":20,"task":"0"},"section":"Init"},"seq":20,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_chunk_failed","provenance":{"seq":21,"task":"0"},"section":"Init"},"seq":21,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_started","provenance":{"seq":22,"task":"0"},"section":"Init"},"seq":22,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"lua_teardown_succeeded","provenance":{"seq":23,"task":"0"},"section":"Init"},"seq":23,"task":"0"}
+{"effect":null,"kind":"event","payload":{"kind":"run_failed","provenance":{"seq":24,"task":"0"},"section":"The Nash Equilibrium"},"seq":24,"task":"0"}

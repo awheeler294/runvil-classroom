@@ -1,3 +1,5 @@
+mod nash;
+
 use harness_gateway_client::{GatewayBroker, GatewayEndpoint, SecretString};
 use runvil::{
     BoxFuture, Error, ErrorCode, Harness, Host, RunSetup,
@@ -28,8 +30,18 @@ async fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     let args = arguments.collect::<Vec<_>>().join(" ");
+    let server = env::var("NASH_HOST_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".to_owned());
     let written = match broker() {
-        Ok(broker) => run(Path::new(&prompt), Path::new(&outputs), args, broker).await,
+        Ok(broker) => {
+            run(
+                Path::new(&prompt),
+                Path::new(&outputs),
+                args,
+                broker,
+                &server,
+            )
+            .await
+        }
         Err(failure) => Err(failure),
     };
     match written {
@@ -49,6 +61,7 @@ async fn run(
     outputs: &Path,
     args: String,
     broker: Arc<dyn InferenceBroker>,
+    server: &str,
 ) -> Result<PathBuf, Failure> {
     let name = prompt
         .file_name()
@@ -62,6 +75,7 @@ async fn run(
 
     let mut registry = PackRegistry::new();
     plugin_std::install(&mut registry, Value::Null, &HostServices::new())?;
+    nash::install(&mut registry, server)?;
     let host = Arc::new(Host {
         packs: Packs::new(registry),
         prompts: Arc::new(move |name: &str| find(&folder, name)),
@@ -169,7 +183,11 @@ impl Timer for Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        process, str, thread,
+    };
 
     #[tokio::test]
     async fn a_model_free_prompt_leaves_its_result_and_trace() {
@@ -180,9 +198,15 @@ mod tests {
         let source = "---\nname: greet\ndescription: Greets the argument\nrunvil: 0\nuses:\n  - std\n---\n\n# Greet\n\n## Answer\n\n```lua\nreturn 'Hello, ' .. args .. '.'\n```\n";
         fs::write(&prompt, source).unwrap();
 
-        let written = run(&prompt, &outputs, "desk".to_owned(), Arc::new(Offline))
-            .await
-            .unwrap();
+        let written = run(
+            &prompt,
+            &outputs,
+            "desk".to_owned(),
+            Arc::new(Offline),
+            "http://127.0.0.1:3000",
+        )
+        .await
+        .unwrap();
 
         assert_eq!(written, outputs.join("2026.greet.md"));
         assert_eq!(fs::read_to_string(&written).unwrap(), "Hello, desk.");
@@ -193,5 +217,71 @@ mod tests {
             .map(|line| serde_json::from_str::<Value>(line).unwrap()["payload"]["kind"].clone());
         assert_eq!(last, Some(json!("run_succeeded")));
         fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_prompt_reaches_the_nash_host_through_the_request_tool() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}/", listener.local_addr().unwrap());
+        let seen = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            let mut chunk = [0; 4096];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                request.push_str(str::from_utf8(&chunk[..read]).unwrap());
+                if read == 0 || complete(&request) {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                .unwrap();
+            request
+        });
+        let folder = env::temp_dir().join(format!("nash-runner-reach-{}", process::id()));
+        let outputs = folder.join("outputs");
+        fs::create_dir_all(&folder).unwrap();
+        let prompt = folder.join("reach.md");
+        let source = "---\nname: reach\ndescription: Sends one request to the Nash host\nrunvil: 0\nuses:\n  - kirill/nash\n---\n\n# Reach\n\n## Send\n\n```lua\nreturn tools.call('nash/request', { method = 'PUT', path = '/api/players/Prisoner%20A', body = '{\"summary\":\"x\"}' })\n```\n";
+        fs::write(&prompt, source).unwrap();
+
+        let written = run(&prompt, &outputs, String::new(), Arc::new(Offline), &server)
+            .await
+            .unwrap();
+
+        let reply = fs::read_to_string(&written).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&reply).unwrap(),
+            json!({ "status": 204, "body": "" })
+        );
+        let request = seen.join().unwrap();
+        let (head, body) = request.split_once("\r\n\r\n").unwrap();
+        let content_type = head
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().starts_with("content-type:"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            (head.lines().next(), content_type, body),
+            (
+                Some("PUT /api/players/Prisoner%20A HTTP/1.1"),
+                vec!["content-type: application/json"],
+                "{\"summary\":\"x\"}"
+            )
+        );
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    fn complete(request: &str) -> bool {
+        request.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+            let length = head.lines().find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")?
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+            });
+            body.len() >= length.unwrap_or(0)
+        })
     }
 }

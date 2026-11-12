@@ -1,0 +1,7 @@
+[package]
+name = "robles-host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+runvil = { git = "https://github.com/cppalliance/runvil", rev = "b0693699df907089a09ee51cfb8c9bcc89833249" }

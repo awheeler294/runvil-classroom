@@ -1,0 +1,8 @@
+[package]
+name = "host"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+runvil = { version = "0.3.0", git = "https://github.com/cppalliance/runvil-harness", rev = "5bca6f9" }
+harness-gateway-client = { version = "0.3.0", git = "https://github.com/cppalliance/runvil-harness", rev = "5bca6f9" }

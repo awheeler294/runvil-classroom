@@ -7,6 +7,7 @@ This tutorial is for a Rust developer who is new to Runvil and is about to own i
 Read all of it as a snapshot. The Plugin system is being built a piece at a time, and what is here is what exists now, not the final design. The contract can read a run's files and has no function that writes one. Half the shipped Packs use an older Rust API that the other half cannot reach. Wherever something is missing, the text says whether it is planned, left out on purpose, or undecided.
 
 - Engine, Harness, and loader: `runvil-harness` at `18361d02`
+- The two rules of section 2 on which Packs a run and a registry hold: the change that follows `b92fdb3b` in `runvil-harness`, whose plan is `plan/2026-11-14-2-every-pack-in-every-run.plan.md` there, and whose tests were run
 - C contract and SDK: `runvil-plugin-api` at `03a9fa3`, contract version 0.4
 - `std` Plugin: `runvil-plugin-std` at `ee04d10`
 - bashkit Plugin: `runvil-plugin-bashkit` at `9c8e980`
@@ -113,11 +114,11 @@ return tools.call('site/fetch', { url = 'https://example.com/' })
 | Tool id | `site/fetch` | The Host forms it from the Pack id and the tool name. Lua uses it |
 | Wire name | `site_fetch` | What the model calls the tool. The Pack may set one, or the Host derives it from the tool id by turning `/` and `.` into `_` |
 
-Four rules follow from the code in `harness-internal/runner/src/packs.rs`, and each one matters to a Plugin author.
+Four rules follow from the code in `harness-internal/runner/src/packs.rs` and `runvil-plugin/src/registry.rs`, and each one matters to a Plugin author.
 
 - **A bare `uses:` entry means the `runvil` vendor.** `uses: [web]` and `uses: [runvil/web]` are the same entry. A Pack from any other vendor is written in full, as `acme/site`.
-- **A run holds every `runvil` Pack, and another vendor's Pack only when the prompt declares it.** So a Pack named `acme/site` gets no instance, and costs nothing, in a run whose prompt leaves it out.
-- **A run holds one Pack per Pack id.** A prompt that declares `acme/web` gets that Pack in place of `runvil/web`, and `web/fetch` then names a tool of `acme/web`.
+- **A run holds every Pack the Host installed, whatever its vendor.** So a Pack named `acme/site` gets an instance in every run of its Host, and the run waits for that instance to be ready, whether or not the prompt declares it. A prompt that leaves the Pack out can still call `site/fetch` or offer it to a model.
+- **A registry holds one Pack per Pack id.** The second Pack inserted under an id is refused, so a Host that has `runvil/web` refuses `acme/web` with ``Pack `acme/web` cannot take the Pack id web, which `runvil/web` holds``, and `web/fetch` names one tool on a Host.
 - **Every `uses:` entry is required.** When the registry lacks the Pack, `Host::parse` refuses the prompt with a notice that begins `the environment cannot satisfy this prompt:` and has one line for each Pack, such as `- site is unavailable: acme/site is not installed`.
 
 To put a tool in front of a model, a section's Lua offers it, as `tools.offer('site')` for the whole Pack or `tools.offer('site/fetch')` for one tool. At the section's first model round the Engine builds the tool list from those offers, and the model then sees each tool as a wire name, a description, and a parameter schema. That description and schema are text your Pack wrote, so they are part of your Plugin's interface as much as the code is. The language guide's chapter on tools covers the prompt author's side in full.

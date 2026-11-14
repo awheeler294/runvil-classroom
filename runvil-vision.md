@@ -21,17 +21,21 @@ A prompt is one Markdown file with a small header, prose, and Lua blocks side by
 ````markdown
 ---
 name: greet
-description: Greet the named input using a Lua-computed value
+description: Greet a name using a Lua-computed value
 runvil: 0
+args:
+  type: object
+  properties:
+    name: { type: string, description: The name to greet }
+  required: [name]
 ---
 
-Computes a greeting from the input in Lua, substitutes it into the prose, and
-has the model echo it.
+Computes a greeting for its `name` argument in Lua, substitutes it into the prose, and has the model echo it.
 
 ## Main
 
 ```lua
-var.greeting = "Hello, " .. args .. "!"
+var.greeting = "Hello, " .. args.name .. "!"
 ```
 
 Repeat exactly, with no extra words: {{ var.greeting }}
@@ -41,7 +45,7 @@ return models.infer(prose)
 ```
 ````
 
-The first Lua block computes a value. The placeholder puts it into the prose. The last block sends that prose to the model. Nothing reaches a model until Lua sends it.
+The header declares the one argument the prompt takes. The first Lua block computes a value from it. The placeholder puts it into the prose. The last block sends that prose to the model. Nothing reaches a model until Lua sends it.
 
 ## Principles
 

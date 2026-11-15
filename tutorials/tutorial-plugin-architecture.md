@@ -13,6 +13,7 @@ Read all of it as a snapshot. The Plugin system is being built a piece at a time
 - bashkit Plugin: `runvil-plugin-bashkit` at `9c8e980`
 - Workshop: `runvil-workshop` at `f386801b`
 - Design pages: `runvil-design` at `b3c101a`, plus the Plugin updates of 2026-11-13 that were made alongside this tutorial
+- What is planned and what is undecided for files and for the shell: the decisions of 2026-11-15, which the pages `files-and-the-vfs.md` and `tools-and-packs.md` under `decisions` in `runvil-harness` record
 
 Everything below was read in the code at those commits. Nothing was built or run for this tutorial. Where a design page or a doc comment says something else, the code wins, and section 13 lists the differences that are likely to trip you up.
 
@@ -30,7 +31,7 @@ Through the contract, a tool can do a small and definite set of things today. It
 
 There are two ways to write a Plugin today, and that is the main thing to understand before you change anything. The first is the contract. A Plugin written against `runvil-plugin-sdk` implements two traits, `Plugin` and `Pack`, and the SDK turns them into the C entry point. `std` and `bashkit` are built this way and ship as dynamic libraries. The second is older. A Plugin crate inside `runvil-harness` exports a Rust function named `install`, which receives the Host's `PackRegistry`, a JSON configuration, and a map of Host services, and it implements a different `Pack` trait from the crate `runvil-plugin`. `web` and `mcp` are built this way and are compiled into Workshop. The second way can do much more: configuration, services, a Lua prelude, readiness, per-model tool shaping, four tool flags, the call's origin, and seven file operations that change files. Every one of those is an internal API that a contract Plugin cannot reach. If people keep writing against it, there are two ways to do everything, and work on one never reaches the other.
 
-So the first job is the inventory in section 9: every ability the Rust path has that the contract lacks, and which shipped Pack uses it. Seven of them stand between `web` and `mcp` and the contract. The rest have no shipped user and can wait. After that come the pieces that Packs on the contract are already waiting for: functions that change files, which the `std` tools Write, StrReplace, and Delete and the `bash` shell all need, and a wake function, so that a waiting call stops costing empty steps. The contract grows only when a Plugin that exists needs something, and while its major version is 0, every version is its own contract: a Plugin built for 0.4 loads only in a Host that speaks exactly 0.4. Expect it to change under you, and expect to be the one changing it.
+So the first job is the inventory in section 9: every ability the Rust path has that the contract lacks, and which shipped Pack uses it. Seven of them stand between `web` and `mcp` and the contract. The rest have no shipped user and can wait. After that comes the piece that Packs on the contract are already waiting for: file operations as effects. Each file operation of a tool, a read as well as a change, will go through the Engine as an effect that the Harness records, so a tool call becomes an async function whose file methods return futures. The `std` tools Write, StrReplace, and Delete and the `bash` shell all wait for it. A wake function, so that a waiting call stops costing empty steps, is undecided. The contract grows only when a Plugin that exists needs something, and while its major version is 0, every version is its own contract: a Plugin built for 0.4 loads only in a Host that speaks exactly 0.4. Expect it to change under you, and expect to be the one changing it.
 
 ## Section by section
 
@@ -312,7 +313,7 @@ Three facts about steps shape every Pack you write.
 
 **A step runs inside the run's own future.** The Harness starts no task for a run. One future drives the whole run, and each step of each tool call runs on whatever thread polls it. So a step that blocks, or computes for a long time, stalls its run. The bashkit plan records what that looks like in practice: a slow script "freezes its run, and the Stop button with it, until the script ends". The rule in the contract is that a step does a bounded slice of work and returns.
 
-**`RV_PENDING` is not a way to wait.** The contract has no wake function. When a step returns `RV_PENDING`, the loader wakes its own future at once, the run's other work gets a turn, and the next step is sent. A call that is waiting on something outside, such as a network reply, is stepped again and again with nothing to do. This is the cost of the current design, and the bashkit plan names the fix it expects: a wake function in the contract, with the long work on a thread of the Plugin's own.
+**`RV_PENDING` is not a way to wait.** The contract has no wake function. When a step returns `RV_PENDING`, the loader wakes its own future at once, the run's other work gets a turn, and the next step is sent. A call that is waiting on something outside, such as a network reply, is stepped again and again with nothing to do. This is the cost of the current design. The bashkit plan names a fix: a wake function in the contract, with the long work on a thread of the Plugin's own. Vinnie has yet to decide on it.
 
 **A long job yields on purpose.** A future that has real work to do awaits `next_step()` every so often, which ends the step and continues at the next one. The `std` Plugin's Grep does this after every 32 files or directories, or after 2 MiB read, so a search over a big tree is many short steps. The pattern, as a sketch:
 
@@ -362,14 +363,21 @@ Now the part that is not there. Contract 0.4 has three file functions, and the f
 | `write`, `append`, `str_replace` | None |
 | `remove`, `mkdir`, `rename`, `copy` | None |
 
-The contract says it plainly: "This version has no function that changes a file." This is the piece-at-a-time approach, not a decision against writing. The read functions arrived in 0.4 on 2026-11-10, the day `std` became a library Plugin with its three readers, and both shipped contract Packs are now waiting for the rest.
+The contract says it plainly: "This version has no function that changes a file." This is the piece-at-a-time approach, not a decision against writing. The read functions arrived in 0.4 on 2026-11-10, the day `std` became a library Plugin with its three readers, and both shipped contract Packs are now waiting for the rest. The rest arrives in a new form, which the end of this section describes.
 
-- **`std`** has seven tools. Read, ListDir, and Grep work. Write, StrReplace, Delete, and Glob answer a fixed text that begins "The <name> tool is not implemented in this build." The first three wait for functions that change files.
+- **`std`** has seven tools. Read, ListDir, and Grep work. Write, StrReplace, Delete, and Glob answer a fixed text that begins "The <name> tool is not implemented in this build." The first three wait for file methods that return futures.
 - **`bash`** runs a shell over the run's files. A command that reads works. A command that writes, deletes, or renames gets one fixed reason: `the shell cannot change files in this build; it can only read the run's files`. The bashkit plan calls this the first of two stages, and the second stage is writing.
 
-The bashkit build found smaller gaps in the same place, which you will meet when you add the write functions: the contract reports no file times and no mode bits, so a shell listing shows every entry with no write bit and a date in 1970, and it does not report where a link leads.
+The bashkit build found smaller gaps in the same place, which you will meet when you add writing: the contract reports no file times and no mode bits, so a shell listing shows every entry with no write bit and a date in 1970, and it does not report where a link leads.
 
-One question from class is still worth knowing about. On 2026-11-06 Vinnie asked whether the file functions a Plugin gets should be synchronous or asynchronous, said "Reversing the choice is expensive", and left it open. Four days later contract 0.4 shipped plain synchronous functions inside a stepped call. No record says the question was closed, so treat the current shape as the working answer.
+The question from class is closed. On 2026-11-06 Vinnie asked whether the file functions a Plugin gets should be synchronous or asynchronous, and said "Reversing the choice is expensive". Four days later contract 0.4 shipped plain synchronous functions inside a stepped call. On 2026-11-15 he decided the question, and the answer has four parts.
+
+- **Storage stays synchronous.** The backends and the Host's `Access` are synchronous, because the storage underneath is. His words: "at the end of the day, the operating system calls are synchronous. So we keep the storage operations synchronous." The Harness performs each file operation with a blocking call, and the run waits for it.
+- **A tool's file operations become effects.** His rule: "every VFS operation that's performed by a tool has to turn into an effect in the engine." The tool asks, the Engine issues the effect, the Harness performs and records it, and a later step of the call receives the answer. A tool call therefore becomes an async function, and the file methods of `ToolCall` will return futures, as in `call.read(path).await`. The reason is the record: a replay and a debugger need every file operation of a run, and today the record holds none of a tool's.
+- **A tool keeps nothing from one call that changes what a later call returns.** His rule: "Tools are not allowed to have internal states, and if they do, they have to be recorded." A replay feeds each recorded tool result back and runs no tool, so a run that went on live afterward would call a tool that had lost what its earlier calls left. The shell is the one shipped tool that keeps such state, and each Shell call will get a shell of its own.
+- **A remote system is a tool's job.** A Host may mount slow storage, and the run that uses it waits for it. Anything that needs a timeout, a retry, or a sign-in goes through a tool, which the Harness can drop while it waits.
+
+All four are still to be built. Until then the three read functions work as this section describes, and a function that changes a file joins the contract in the new form.
 
 ### 7. How the Harness loads a contract Plugin
 
@@ -639,8 +647,8 @@ Vinnie described the state of Plugins to the class on 2026-11-06: "The plug-ins 
 
 **Planned, and written down somewhere**
 
-- **Functions that change files.** One of the two largest planned items on the design page for tools and Packs, and stage two of the bashkit plan. `std` Write, StrReplace, and Delete wait for it.
-- **A wake function**, so that a waiting call costs no empty steps and a Plugin can run long work on a thread of its own. Named in the bashkit plan.
+- **File operations as effects.** Each file operation of a tool, a read as well as a change, as an effect that the Harness records, with file methods in the SDK that return futures (section 6). Decided on 2026-11-15. `std` Write, StrReplace, and Delete and the writes of the `bash` shell wait for it.
+- **A shell for each call.** Each Shell call with a new shell, so that the working directory, variables, and functions of one call end with it. Decided on 2026-11-15. Today a run has one session, which its calls share.
 - **One Plugin API.** `web` and `mcp` move onto the contract, Workshop inserts them with `insert_plugin`, and their `install` functions go away. Recorded on 2026-10-20 and deferred twice. The design pages list it as planned work and as a known gap, and no plan schedules it.
 - **Configuration for a Plugin**, passed in the arguments of the load. Recorded on 2026-10-20 as deferred.
 - **Host services through the contract.** The same record expects them as functions in the C table, "because a Plugin can't receive Rust objects from the Host", and says that otherwise the Plugin brings its own runtime. The design page for the Harness lists more services to come: secrets, a schedule, and a model client for Packs.
@@ -660,7 +668,7 @@ Vinnie described the state of Plugins to the class on 2026-11-06: "The plug-ins 
 
 **Undecided**
 
-- **Synchronous or asynchronous file functions.** Open since class on 2026-11-06 (section 6).
+- **A wake function, and bash on a thread of its own.** Named in the bashkit plan, so that a waiting call costs no empty steps and a Plugin can run long work on a thread of its own (section 5).
 - **How a Lua prelude would cross the contract.** The 2026-10-20 record asks: text handed over once, or a call for each Lua VM?
 - **What a Plugin that fails partway keeps.** A Rust `install` that returns an error keeps the Packs it already inserted. A contract Plugin whose load fails inserts none.
 - **Where the crate `runvil-plugin` ends up.** Vinnie, reading the crate list in class on 2026-11-10: "I'm not really sure how that fits in because I've changed the plugins."

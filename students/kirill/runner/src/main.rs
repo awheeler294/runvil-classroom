@@ -9,9 +9,9 @@ use runvil::{
         Completion, CompletionOptions, Message, ModelBinding, ModelCatalog, ToolSchema,
         make_completion_error, phrase,
     },
-    plugin::{HostServices, PackRegistry},
+    plugin::PackRegistry,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     env, error, fs, io,
     path::{Path, PathBuf},
@@ -29,7 +29,13 @@ async fn main() -> ExitCode {
         eprintln!("usage: nash-runner <prompt.md> <output-dir> [args...]");
         return ExitCode::from(2);
     };
-    let args = arguments.collect::<Vec<_>>().join(" ");
+    let text = arguments.collect::<Vec<_>>().join(" ");
+    let args = if text.is_empty() {
+        json!({})
+    } else {
+        json!({ "text": text })
+    }
+    .to_string();
     let server = env::var("NASH_HOST_URL").unwrap_or_else(|_| "http://127.0.0.1:3000".to_owned());
     let written = match broker() {
         Ok(broker) => {
@@ -74,7 +80,6 @@ async fn run(
     let folder = prompt.parent().map(Path::to_owned).unwrap_or_default();
 
     let mut registry = PackRegistry::new();
-    plugin_std::install(&mut registry, Value::Null, &HostServices::new())?;
     nash::install(&mut registry, server)?;
     let host = Arc::new(Host {
         packs: Packs::new(registry),
@@ -82,17 +87,10 @@ async fn run(
         timer: Arc::new(Clock),
     });
     let parsed = host.parse(name)?;
-    let declared = parsed
-        .frontmatter()
-        .output()
-        .map(|output| output.path().to_owned());
 
     let recorder = Arc::new(MemoryRecorder::new());
     let setup = RunSetup {
         args,
-        input_text: env::var_os("RUNNER_INPUT")
-            .map(fs::read_to_string)
-            .transpose()?,
         selected_model: env::var("RUNNER_MODEL").ok(),
         ..RunSetup::new(recorder.clone(), broker)
     };
@@ -117,15 +115,8 @@ async fn run(
 
     let text = report.result?;
     println!("{text}");
-    let (document, extension) = match &declared {
-        Some(path) => (
-            report.output?,
-            Path::new(path).extension().and_then(|kind| kind.to_str()),
-        ),
-        None => (text, None),
-    };
-    let written = outputs.join(format!("{stem}.{}", extension.unwrap_or("md")));
-    fs::write(&written, document)?;
+    let written = outputs.join(format!("{stem}.md"));
+    fs::write(&written, text)?;
     Ok(written)
 }
 
@@ -183,6 +174,7 @@ impl Timer for Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -195,13 +187,13 @@ mod tests {
         let outputs = folder.join("outputs");
         fs::create_dir_all(&folder).unwrap();
         let prompt = folder.join("2026.greet.md");
-        let source = "---\nname: greet\ndescription: Greets the argument\nrunvil: 0\nuses:\n  - std\n---\n\n# Greet\n\n## Answer\n\n```lua\nreturn 'Hello, ' .. args .. '.'\n```\n";
+        let source = "---\nname: greet\ndescription: Greets the argument\nrunvil: 0\n---\n\n## Answer\n\n```lua\nreturn 'Hello, ' .. args.text .. '.'\n```\n";
         fs::write(&prompt, source).unwrap();
 
         let written = run(
             &prompt,
             &outputs,
-            "desk".to_owned(),
+            r#"{"text":"desk"}"#.to_owned(),
             Arc::new(Offline),
             "http://127.0.0.1:3000",
         )
@@ -243,10 +235,11 @@ mod tests {
         let outputs = folder.join("outputs");
         fs::create_dir_all(&folder).unwrap();
         let prompt = folder.join("reach.md");
-        let source = "---\nname: reach\ndescription: Sends one request to the Nash host\nrunvil: 0\nuses:\n  - kirill/nash\n---\n\n# Reach\n\n## Send\n\n```lua\nreturn tools.call('nash/request', { method = 'PUT', path = '/api/players/Prisoner%20A', body = '{\"summary\":\"x\"}' })\n```\n";
+        let source = "---\nname: reach\ndescription: Sends one request to the Nash host\nrunvil: 0\nuses:\n  - kirill/nash\n---\n\n## Send\n\n```lua\nreturn tools.call('nash/request', { method = 'PUT', path = '/api/players/Prisoner%20A', body = '{\"summary\":\"x\"}' })\n```\n";
         fs::write(&prompt, source).unwrap();
 
-        let written = run(&prompt, &outputs, String::new(), Arc::new(Offline), &server)
+        let args = "{}".to_owned();
+        let written = run(&prompt, &outputs, args, Arc::new(Offline), &server)
             .await
             .unwrap();
 

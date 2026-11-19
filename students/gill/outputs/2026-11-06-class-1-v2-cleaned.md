@@ -196,17 +196,11 @@ Falco, Vinnie [35:16]: Enrichment, and there's a mutation where we ask what if: 
 
 Falco, Vinnie [35:40]: These are the seven ways that it can modify your story and ask you a question that makes you think about your story from a different angle. That capture is super valuable.
 
-Falco, Vinnie [35:57]: I wanna do that with you, but where you're all asking me questions. Before we do that, there's another repository that you should know about, which is called Runvil design. This is where I dumped all of my reports.
+Falco, Vinnie [35:57]: I wanna do that with you, but where you're all asking me questions.
 
-Falco, Vinnie [36:13]: A lot of this stuff is out of date, and there's just crap from the history, but the way to make sense of this repository is that the newer it is, the better. Stuff that's from last week is gonna be more relevant than stuff from July.
+Falco, Vinnie [37:21]: There are some challenges that we need to solve. One of them is that the inference endpoint has multiple shapes. Right now, Gateway speaks what's called the OpenAI model. It's a generic inference endpoint where you present the messages and the tools, and then it gives you the response. However, if you wanna get the most from Claude, or you want to get the most from ChatGPT, or from some of the other frontier models, you have to use their special API, which is a little bit different. It's not the same, so you have to do something special.
 
-Falco, Vinnie [36:33]: Every time I wanna know how something works so that I can implement it in Runvil, I have this directory called research. This is the newest stuff. Jason will probably recognize this: we want to present a prompt as an MCP tool. So I did some research, we went on the web, and it got all this information.
-
-Falco, Vinnie [37:02]: This is how I developed most of the stuff in Runvil, because before Runvil, I did not know how agent harnesses work. I just knew how to type in prompts. So I had to learn, and the way that I learned is, I do a prompt that goes in, it creates one of these reports.
-
-Falco, Vinnie [37:21]: You can see what's here. There are some challenges that we need to solve. One of them is that the inference endpoint has multiple shapes. Right now, Gateway speaks what's called the OpenAI model. It's a generic inference endpoint where you present the messages and the tools, and then it gives you the response. However, if you wanna get the most from Claude, or you want to get the most from ChatGPT, or from some of the other frontier models, you have to use their special API, which is a little bit different. It's not the same, so you have to do something special.
-
-Falco, Vinnie [38:15]: This document explains what the differences are, and Gateway will need to implement this. Gateway will speak a generic protocol, and then it will translate that into whatever Anthropic wants, and there will need to be a little bit of cooperation with the Runvil engine.
+Falco, Vinnie [38:15]: Gateway will speak a generic protocol, and then it will translate that into whatever Anthropic wants, and there will need to be a little bit of cooperation with the Runvil engine.
 
 Falco, Vinnie [38:52]: Anthropic models send their thinking blocks with an additional cryptographic signature, so that you can't tamper with it, because if you were able to tamper with the thinking, then you could distill more effectively.
 
@@ -219,8 +213,6 @@ Falco, Vinnie [40:04]: They also have different ways that they handle tools, lit
 Wheeler, Andrew [40:35]: Do we have that internal API worked out yet, or is that something we're gonna have to work out? Protocol?
 
 Falco, Vinnie [40:45]: It's a great question.
-
-Falco, Vinnie [40:50]: It would be in this file, you have to look in this file.
 
 Falco, Vinnie [40:54]: I'll say this, though: it's not that complicated.
 

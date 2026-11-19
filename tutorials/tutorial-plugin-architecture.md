@@ -12,7 +12,6 @@ Read all of it as a snapshot. The Plugin system is being built a piece at a time
 - `std` Plugin: `runvil-plugin-std` at `ee04d10`
 - bashkit Plugin: `runvil-plugin-bashkit` at `9c8e980`
 - Workshop: `runvil-workshop` at `f386801b`
-- Design pages: `runvil-design` at `b3c101a`, plus the Plugin updates of 2026-11-13 that were made alongside this tutorial
 - What is planned and what is undecided for files and for the shell: the decisions of 2026-11-15, which the pages `files-and-the-vfs.md` and `tools-and-packs.md` under `decisions` in `runvil-harness` record
 
 Everything below was read in the code at those commits. Nothing was built or run for this tutorial. Where a design page or a doc comment says something else, the code wins, and section 13 lists the differences that are likely to trip you up.
@@ -697,7 +696,7 @@ Read these in this order. Each one is short enough to finish.
 6. `runvil-harness/crates/harness-internal/runner/src/packs.rs`. How a run picks its Packs, makes them, and performs a call.
 7. `runvil-harness/crates/runvil-plugin/src/lib.rs`, then `plugin-web/src/web.rs` and `plugin-mcp/src/dynamic.rs`. The Rust `install` path and its two users.
 8. `runvil-workshop/crates/workshop/server/src/agents.rs`. One Host putting it all together.
-9. `runvil-design/decisions/tools-and-packs.md` and `files-and-the-vfs.md`. The design and its reasons, with planned work, known gaps, and open questions.
+9. `runvil-harness/decisions/tools-and-packs.md` and `files-and-the-vfs.md`. The design and its reasons, with planned work.
 10. `runvil-harness/vibe/2026-10/2026-10-20-1-library-plugin-loading.md`. The record of the day the C entry point was designed. Search it for "Deferred" and for "treated exactly the same".
 
 The lesson plan of 2026-11-10 has you build `vibelight`, which writes an outline of every type, trait, and function in a repository with no function bodies. Run it in `runvil-plugin-api` and in `runvil-harness`, and keep the outlines open beside this page.

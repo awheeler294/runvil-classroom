@@ -14,7 +14,7 @@ Read all of it as a snapshot. The Plugin system is being built a piece at a time
 - Workshop: `runvil-workshop` at `f386801b`
 - What is planned and what is undecided for files and for the shell: the decisions of 2026-11-15, which the pages `files-and-the-vfs.md` and `tools-and-packs.md` under `decisions` in `runvil-harness` record
 
-Everything below was read in the code at those commits. Nothing was built or run for this tutorial. Where a design page or a doc comment says something else, the code wins, and section 13 lists the differences that are likely to trip you up.
+Everything below was read in the code at those commits. Nothing was built or run for this tutorial. Where a decision page or a doc comment says something else, the code wins, and section 13 lists the differences that are likely to trip you up.
 
 ## In one paragraph
 
@@ -648,9 +648,9 @@ Vinnie described the state of Plugins to the class on 2026-11-06: "The plug-ins 
 
 - **File operations as effects.** Each file operation of a tool, a read as well as a change, as an effect that the Harness records, with file methods in the SDK that return futures (section 6). Decided on 2026-11-15. `std` Write, StrReplace, and Delete and the writes of the `bash` shell wait for it.
 - **A shell for each call.** Each Shell call with a new shell, so that the working directory, variables, and functions of one call end with it. Decided on 2026-11-15. Today a run has one session, which its calls share.
-- **One Plugin API.** `web` and `mcp` move onto the contract, Workshop inserts them with `insert_plugin`, and their `install` functions go away. Recorded on 2026-10-20 and deferred twice. The design pages list it as planned work and as a known gap, and no plan schedules it.
+- **One Plugin API.** `web` and `mcp` move onto the contract, Workshop inserts them with `insert_plugin`, and their `install` functions go away. Recorded on 2026-10-20 and deferred twice. The decision pages list it as planned work, and no plan schedules it.
 - **Configuration for a Plugin**, passed in the arguments of the load. Recorded on 2026-10-20 as deferred.
-- **Host services through the contract.** The same record expects them as functions in the C table, "because a Plugin can't receive Rust objects from the Host", and says that otherwise the Plugin brings its own runtime. The design page for the Harness lists more services to come: secrets, a schedule, and a model client for Packs.
+- **Host services through the contract.** The same record expects them as functions in the C table, "because a Plugin can't receive Rust objects from the Host", and says that otherwise the Plugin brings its own runtime. The decision page for the Harness lists more services to come: secrets, a schedule, and a model client for Packs.
 - **A render verb.** Number 8 is reserved, and the Rust `RenderContext` is kept as plain data, in the words of its docs, "so a later C verb can pass it serialized".
 - **A prelude through the contract.** Number 7 is reserved. The records sketch a native prelude with a C API for Lua, and no code exists.
 - **Approval by a person.** The file system can already answer that an operation needs approval. The step that asks the operator is still to come, and so is a way for a tool to wait for the answer.

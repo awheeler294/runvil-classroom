@@ -159,15 +159,15 @@ The public page `why-runvil.md` is dated 2026-11-11 in its footer and states a m
 
 1. Agent2Agent (A2A) Protocol Specification. https://a2a-protocol.org/latest/specification/ Sections 1, 1.2, 3.1.1, 3.2.2, 3.3.3, 3.6, 3.6.2, 4 terminology as rendered in section 2.2, 8.1, 8.2, and Appendix B. Fetched 2026-11-17. The page prints no publication date. Banner text: latest released version 1.0.0.
 2. GitHub release v1.0.1, repository `a2aproject/A2A`. https://github.com/a2aproject/A2A/releases/tag/v1.0.1 Published 2026-05-28T11:34:36Z. Notes heading dated 2026-05-26. Fetched 2026-11-17.
-3. `runvil-design/decisions/harness-and-host.md`, streaming rule. Working tree, read 2026-11-17.
-4. `runvil-design/why-runvil.md`, executive summary and feature 6. Footer dated 2026-11-11. Working tree, read 2026-11-17.
-5. `runvil-design/decisions/tasks-and-fanout.md`, summary, scheduler, `RunControl`, and planned work. Working tree, read 2026-11-17. The page names code commits `fa9936f64` and later path commits.
-6. `runvil-design/decisions/prompt-language.md`, the `execute` entry. Working tree, read 2026-11-17.
-7. `runvil-design/decisions/engine.md`, effects and the HTTP-client check. Working tree, read 2026-11-17.
+3. `runvil-harness/decisions/harness-and-host.md`, streaming rule. Working tree, read 2026-11-17.
+4. `why-runvil.md` in a retired repository, executive summary and feature 6. Footer dated 2026-11-11. Working tree, read 2026-11-17.
+5. `decisions/tasks-and-fanout.md` in a retired repository, summary, scheduler, `RunControl`, and planned work. Working tree, read 2026-11-17. The page names code commits `fa9936f64` and later path commits.
+6. `runvil-harness/decisions/prompt-language.md`, the `execute` entry. Working tree, read 2026-11-17.
+7. `runvil-harness/decisions/engine.md`, effects and the HTTP-client check. Working tree, read 2026-11-17.
 8. `runvil-harness/crates/runvil-plugin/src/registry.rs`, `BUILTIN` and `Builtin::tools`. Working tree, read 2026-11-17.
-9. `runvil-design/decisions/tools-and-packs.md`, the Pack test, untrusted output, and factory-owned HTTP clients. Working tree, read 2026-11-17.
-10. `runvil-design/research/2026-10-10-subagent-tool-catalog.md`, "Protocols define methods, not model-facing tools." Working tree, read 2026-11-17. The note pins A2A documents at commit `12e9d2fbb9badfe98f8ab4f660697870eeb1940b`, which it dates 2026-10-07. That pin was not re-fetched.
-11. `runvil-design/research/2026-09/2026-09-12-everruns-integration-paths.md`, items 68 and 85. Working tree, read 2026-11-17. This is a mapping survey, not a decision page. Its claim that background sub-agents are still deferred conflicts with reference 5 and is treated as stale in section 5.
+9. `runvil-harness/decisions/tools-and-packs.md`, the Pack test, untrusted output, and factory-owned HTTP clients. Working tree, read 2026-11-17.
+10. `research/2026-10-10-subagent-tool-catalog.md` in a retired repository, "Protocols define methods, not model-facing tools." Working tree, read 2026-11-17. The note pins A2A documents at commit `12e9d2fbb9badfe98f8ab4f660697870eeb1940b`, which it dates 2026-10-07. That pin was not re-fetched.
+11. `research/2026-09/2026-09-12-everruns-integration-paths.md` in a retired repository, items 68 and 85. Working tree, read 2026-11-17. This is a mapping survey, not a decision page. Its claim that background sub-agents are still deferred conflicts with reference 5 and is treated as stale in section 5.
 
 ---
 

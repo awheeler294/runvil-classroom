@@ -25,7 +25,7 @@ require '## helpers'
 var.date = sys.when:sub(1, 10)
 var.month_year = format_month_year(sys.when)
 var.model_id = models.current().model_id
-var.operator = discover_operator()
+var.operator = ""
 ```
 
 ## Step 1 - Survey
@@ -819,17 +819,6 @@ function format_month_year(iso)
   local y, m = tostring(iso or ""):match("^(%d%d%d%d)%-(%d%d)")
   local idx = tonumber(m) or 1
   return (MONTHS[idx] or "January") .. " " .. (y or "2026")
-end
-
-function discover_operator()
-  if type(ui) == "function" then
-    local ok, snap = pcall(ui)
-    if ok and type(snap) == "table" and type(snap.workspace_root) == "string" then
-      local user = snap.workspace_root:match("/Users/([^/]+)") or snap.workspace_root:match("\\Users\\([^\\]+)")
-      if user and user ~= "" then return user end
-    end
-  end
-  return ""
 end
 
 function strip_json_fence(raw)

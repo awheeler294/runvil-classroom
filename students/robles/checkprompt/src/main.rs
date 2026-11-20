@@ -5,7 +5,7 @@
 // Code 8: Cannot read file path
 // Code 7: Cannot parse prompt
 // Code 6: Cannot run prompt
-// Usage: checkprompt <prompt.md> [--run] [--args <JSON>]
+// Usage: checkprompt <prompt.md> [--run] [--args <JSON>] [--model <str>]
 
 use std::env;
 use std::fs;
@@ -44,6 +44,7 @@ const BANNER: &str = r#"
 enum CheckError {
     NoArgumentGiven,
     ArgsValueMissing,
+    ModelValueMissing,
     CannotParsePrompt(String),
     CannotReadFilePath(String),
     CannotRunPrompt(String),
@@ -63,6 +64,7 @@ impl CheckError {
         match self {
             Self::NoArgumentGiven => ExitCode::from(9),
             Self::ArgsValueMissing => ExitCode::from(9),
+            Self::ModelValueMissing => ExitCode::from(9),
             Self::CannotReadFilePath(_) => ExitCode::from(8),
             Self::CannotParsePrompt(_) => ExitCode::from(7),
             Self::CannotRunPrompt(_) => ExitCode::from(6),
@@ -73,8 +75,9 @@ impl CheckError {
         match self {
             Self::CannotReadFilePath(msg) => msg.clone(),
             Self::CannotParsePrompt(msg) => msg.clone(),
-            Self::NoArgumentGiven => "No argument given".to_string(),
-            Self::ArgsValueMissing => "The value of Args is missing".to_string(),
+            Self::NoArgumentGiven => "No argument given.".to_string(),
+            Self::ArgsValueMissing => "The value of Args is missing.".to_string(),
+            Self::ModelValueMissing => "The model specification is missing.".to_string(),
             Self::CannotRunPrompt(msg) => msg.clone(),
         }
     }
@@ -93,14 +96,14 @@ async fn main() -> ExitCode {
 
     if cli_args.len() == 1 {
         println!("{BANNER}");
-        println!("  usage: {program} <prompt.md> [--run] [--args <JSON>]");
+        println!("  usage: {program} <prompt.md> [--run] [--args <JSON>] [--model <str>]");
         return ExitCode::SUCCESS;
     }
 
     let mut run = false;
     let mut path: Option<&String> = None;
     let mut prompt_args = "{}".to_string();
-
+    let mut model_value = "gpt-5-mini".to_string();
     let mut i = 1;                          
     while i < cli_args.len() {
         let word = &cli_args[i];
@@ -114,7 +117,14 @@ async fn main() -> ExitCode {
                 return err.error_code();
             };
             prompt_args = value.clone();
-          
+        } else if word == "--model" {
+            i+=1;
+            let Some(model) = cli_args.get(i) else {
+                let err = CheckError::ModelValueMissing;
+                eprintln!("{program}: {}", err.message());
+                return err.error_code();
+            };
+            model_value = model.clone();
         } else {
             path = Some(word);                   
         }
@@ -124,25 +134,25 @@ async fn main() -> ExitCode {
     let Some(path) = path else {
         let no_arg = CheckError::NoArgumentGiven;
         eprintln!("{program}: {}", no_arg.message());
-        eprintln!("Usage: {program} <prompt.md> [--run] [--args <JSON>]");
+        eprintln!("Usage: {program} <prompt.md> [--run] [--args <JSON>] [--model <str>]");
 
         return no_arg.error_code();
     };
 
-    match check(path, run, &prompt_args).await {
+    match check(path, run, &prompt_args,&model_value).await {
         Ok(()) => {
             println!("Success!");
             ExitCode::SUCCESS
         }
         Err(err) => {
             eprintln!("{program}: {}", err.message());
-            eprintln!("Usage: {program} <prompt.md> [--run] [--args <JSON>]");
+            eprintln!("Usage: {program} <prompt.md> [--run] [--args <JSON>] [--model <str>]");
             err.error_code()
         }
     }
 }
 
-async fn check(path: &str, run: bool, prompt_args: &str) -> Result<(), CheckError> {
+async fn check(path: &str, run: bool, prompt_args: &str, model: &str) -> Result<(), CheckError> {
     let text = fs::read_to_string(path);
 
     let prompt_file = match text {
@@ -218,7 +228,7 @@ async fn check(path: &str, run: bool, prompt_args: &str) -> Result<(), CheckErro
 
     let setup = RunSetup {
         args: prompt_args.to_owned(),
-        selected_model: Some("gpt-5-mini".to_owned()),
+        selected_model: Some(model.to_owned()),
         ..RunSetup::new(recorder, broker)
     };
 
